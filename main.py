@@ -44,9 +44,14 @@ CONFIG_FILE = 'bot_config.json'
 def load_config():
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            if data.get("last_sell", 0) == 0:
+                data["last_sell"] = 1550
+            if data.get("last_buy", 0) == 0:
+                data["last_buy"] = 1310
+            return data
     except:
-        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 0, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "last_salary_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
+        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 1550, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "last_salary_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
 
 def save_config():
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -54,14 +59,12 @@ def save_config():
 
 config = load_config()
 
-# ======== دالة ارسال الخطأ للادمن ========
 async def send_error_to_admin(error_text):
     for admin_id in config["admin_ids"]:
         try:
             await bot.send_message(admin_id, f"❌ **صار خطأ بالبوت:**\n\n<code>{error_text[:3000]}</code>", parse_mode='HTML')
         except: pass
 
-# ======== دالة جلب الاخبار ========
 async def get_latest_news():
     try:
         url = "https://www.alsumaria.tv/news"
@@ -83,25 +86,87 @@ async def get_latest_news():
 def get_dollar_prices():
     buy_price = 1310
     sell_prices = []
-    try:
-        res = requests.get("https://www.iraqidinarchat.com/", timeout=15, verify=False)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        text = soup.get_text()
-        for line in text.split('\n'):
-            if ("بغداد" in line or "الكفاح" in line or "بيع" in line) and any(c.isdigit() for c in line):
-                nums = [int(s) for s in line.split() if s.isdigit() and len(s) >= 4]
-                for num in nums:
-                    if 1450 <= num <= 1600: sell_prices.append(num)
-                    elif 145000 <= num <= 160000: sell_prices.append(num // 100)
-    except: pass
-    try:
-        res = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=15)
-        data = res.json()
-        if 'rates' in data and 'IQD' in data['rates']:
-            market = int(data['rates']['IQD'])
-            if 1400 <= market <= 1600: sell_prices.append(market)
-    except: pass
-    sell_price = int(sum(sell_prices) / len(sell_prices)) if sell_prices else config.get("last_sell", 1550)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+    # قائمة المصادر - يمشي عليهم واحد واحد لحد ما يلكه سعر
+    sources = [
+        {
+            "name": "عراقي دينار شات",
+            "url": "https://www.iraqidinarchat.com/",
+            "check": lambda text: any(kw in text for kw in ["بغداد", "الكفاح", "بيع", "sell"])
+        },
+        {
+            "name": "البنك المركزي",
+            "url": "https://cbi.iq/page/26",
+            "check": lambda text: "سعر الصرف" in text or "Exchange" in text
+        },
+        {
+            "name": "السومرية نيوز",
+            "url": "https://www.alsumaria.tv/news/economy",
+            "check": lambda text: "دولار" in text and "بيع" in text
+        },
+        {
+            "name": "IQD Guru",
+            "url": "https://iqd.exchangerate.guru/",
+            "check": lambda text: "1 USD =" in text
+        },
+        {
+            "name": "Wise",
+            "url": "https://wise.com/us/currency-converter/usd-to-iqd-rate",
+            "check": lambda text: "1 USD" in text
+        },
+        {
+            "name": "ExchangeRate API",
+            "url": "https://api.exchangerate-api.com/v4/latest/USD",
+            "check": lambda text: "IQD" in text
+        }
+    ]
+
+    for source in sources:
+        try:
+            print(f"محاولة جلب السعر من: {source['name']}")
+            if "api.exchangerate-api.com" in source["url"]:
+                res = requests.get(source["url"], timeout=15, headers=headers)
+                data = res.json()
+                if 'rates' in data and 'IQD' in data['rates']:
+                    market = int(data['rates']['IQD'])
+                    if 1400 <= market <= 1600:
+                        sell_prices.append(market)
+                        print(f"✅ نجح {source['name']}: {market}")
+            else:
+                res = requests.get(source["url"], timeout=15, verify=False, headers=headers)
+                soup = BeautifulSoup(res.text, 'html.parser')
+                text = soup.get_text()
+
+                if source["check"](text):
+                    for line in text.split('\n'):
+                        if any(kw in line for kw in ["بيع", "sell", "السوق", "1 USD"]):
+                            # استخراج كل الارقام من السطر
+                            nums = []
+                            for word in line.replace(',', '').split():
+                                try:
+                                    num = int(float(word))
+                                    if 1400 <= num <= 1600: nums.append(num)
+                                    elif 140000 <= num <= 160000: nums.append(num // 100)
+                                except: continue
+                            sell_prices.extend(nums)
+
+                    if sell_prices:
+                        print(f"✅ نجح {source['name']}: {sell_prices[-1]}")
+                        break # اذا لكه سعر من هذا الموقع، لا يكمل للباقي
+        except Exception as e:
+            print(f"❌ فشل {source['name']}: {str(e)[:50]}")
+            continue
+
+    # اذا لكه اسعار احسب المتوسط، اذا لا استخدم القديم بس مو صفر
+    if sell_prices:
+        sell_price = int(sum(sell_prices) / len(sell_prices))
+        print(f"السعر النهائي المحسوب: {sell_price}")
+    else:
+        sell_price = config.get("last_sell", 1550)
+        if sell_price == 0: sell_price = 1550
+        print(f"ما لكيت سعر جديد، استخدم القديم: {sell_price}")
+
     return {"buy": buy_price, "sell": sell_price}
 
 def make_dollar_post(prices):
@@ -110,21 +175,20 @@ def make_dollar_post(prices):
     buy = prices["buy"]
     sell = prices["sell"]
     old_buy = config.get("last_buy", 1310)
-    old_sell = config.get("last_sell", 0)
+    old_sell = config.get("last_sell", 1550)
     if old_buy!= buy: config["last_buy_date"] = date_now
-    if old_sell!= sell and old_sell!= 0: config["last_sell_date"] = date_now
+    if old_sell!= sell: config["last_sell_date"] = date_now
     if old_buy == buy: change_buy = "➡️ استقرار"
     else: change_buy = f"📈 صعود {buy - old_buy}" if buy > old_buy else f"📉 نزول {old_buy - buy}"
-    if old_sell == 0: change_sell, change_paper = "", ""
+    if old_sell == sell: change_sell, change_paper = "➡️ استقرار", "➡️ استقرار"
     elif sell > old_sell:
         diff = sell - old_sell
         change_sell = f"📈 صعود {diff} دينار"
         change_paper = f"📈 صعود {diff * 100:,} دينار"
-    elif sell < old_sell:
+    else:
         diff = old_sell - sell
         change_sell = f"📉 نزول {diff} دينار"
         change_paper = f"📉 نزول {diff * 100:,} دينار"
-    else: change_sell, change_paper = "➡️ استقرار", "➡️ استقرار"
     config["last_buy"] = buy
     config["last_sell"] = sell
     save_config()
@@ -222,7 +286,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     silent = "🔕 مفعل" if config["silent_mode"] else "🔔 معطل"
     dollar = "💵 مفعل" if config["dollar_enabled"] else "💵 معطل"
     pinned = "📌 مثبت" if config.get("dollar_msg_id") else "❌ غير مثبت"
-    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 0):,}\n"
+    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 1550):,}\n"
     keyboard = [
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="get_dollar")],
@@ -307,7 +371,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: await query.edit_message_text("❌ فشل\n\n/admin")
         else: await query.edit_message_text("❌ لا توجد رسالة مثبتة\n\n/admin")
     elif data == "get_dollar":
-        await query.edit_message_text("⏳ جاري جلب الاسعار...")
+        await query.edit_message_text("⏳ جاري جلب الاسعار من 6 مصادر...")
         prices = get_dollar_prices()
         post = make_dollar_post(prices)
         keyboard = [[InlineKeyboardButton("✅ نشر وتثبيت", callback_data=f"post_dollar")], [InlineKeyboardButton("🔙 رجوع", callback_data="refresh")]]
@@ -390,7 +454,6 @@ async def post_init(application):
     asyncio.create_task(check_salaries())
     asyncio.create_task(check_dollar())
 
-# شلنا async def main() كله وحطينا التشغيل مباشر
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).request(request).post_init(post_init).build()
     conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(broadcast_start, pattern="^broadcast$")], states={BROADCAST: [MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_send)]}, fallbacks=[CommandHandler("cancel", cancel)], per_message=False, per_chat=True, per_user=True)
@@ -400,4 +463,4 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(button_handler))
     print("بوت قناة @w_3_vv اشتغل...")
-    app.run_polling(close_loop=False) # هذا السطر هو الوحيد اللي يشغل البوت
+    app.run_polling(close_loop=False)
