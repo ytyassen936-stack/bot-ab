@@ -16,9 +16,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
 nest_asyncio.apply()
 
-TOKEN = os.getenv("8686499728:AAF0AbQMXhEyAXsV-_bXC1xBiSgNXSUeovQ")
-CHANNEL_ID = '@w_3_vv'
-ADMIN_IDS = [7493679412]
+19  TOKEN = os.getenv("BOT_TOKEN")
+20  CHANNEL_ID = os.getenv("CHANNEL_ID")
+21  ADMIN_IDS = [int(os.getenv("ADMIN_ID"))]
 CHECK_INTERVAL = 600
 DOLLAR_INTERVAL = 3600
 BROADCAST = range(1)
