@@ -1,3 +1,4 @@
+import os
 import requests
 from bs4 import BeautifulSoup
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, Update
@@ -9,12 +10,13 @@ import nest_asyncio
 import urllib3
 import warnings
 import json
+import traceback
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
 nest_asyncio.apply()
 
-TOKEN = '8678753090:AAEwqJz2YgEsdVYGFcjUC_NwdfAU1Y3nyfo'
+TOKEN = os.getenv("8686499728:AAF0AbQMXhEyAXsV-_bXC1xBiSgNXSUeovQ")
 CHANNEL_ID = '@w_3_vv'
 ADMIN_IDS = [7493679412]
 CHECK_INTERVAL = 600
@@ -30,13 +32,20 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 0, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
+        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 0, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "last_salary_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
 
 def save_config():
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 config = load_config()
+
+# ======== دالة ارسال الخطأ للادمن ========
+async def send_error_to_admin(error_text):
+    for admin_id in config["admin_ids"]:
+        try:
+            await bot.send_message(admin_id, f"❌ **صار خطأ بالبوت:**\n\n<code>{error_text[:3000]}</code>", parse_mode='HTML')
+        except: pass
 
 # ======== دالة جلب الاخبار ========
 async def get_latest_news():
@@ -54,6 +63,7 @@ async def get_latest_news():
             news_list.append(f"• [{title}]({link})")
         return "\n\n".join(news_list) if news_list else "ما لكيت اخبار حاليا"
     except Exception as e:
+        await send_error_to_admin(f"get_latest_news:\n{traceback.format_exc()}")
         return f"❌ صار خطأ: {str(e)[:100]}"
 
 def get_dollar_prices():
@@ -118,7 +128,8 @@ async def pin_dollar_message(message_id):
         await bot.pin_chat_message(CHANNEL_ID, message_id, disable_notification=True)
         config["dollar_msg_id"] = message_id
         save_config()
-    except: pass
+    except Exception as e:
+        await send_error_to_admin(f"pin_dollar_message:\n{traceback.format_exc()}")
 
 def make_klesha(no3, title, link):
     date = datetime.now().strftime("%Y/%m/%d - %H:%M")
@@ -127,11 +138,14 @@ def make_klesha(no3, title, link):
 async def check_dollar():
     while True:
         if config["dollar_enabled"] and not config["silent_mode"]:
-            prices = get_dollar_prices()
-            if prices["sell"]!= config.get("last_sell", 0):
-                post = make_dollar_post(prices)
-                msg = await bot.send_message(CHANNEL_ID, post, parse_mode='Markdown')
-                await pin_dollar_message(msg.message_id)
+            try:
+                prices = get_dollar_prices()
+                if prices["sell"]!= config.get("last_sell", 0):
+                    post = make_dollar_post(prices)
+                    msg = await bot.send_message(CHANNEL_ID, post, parse_mode='Markdown')
+                    await pin_dollar_message(msg.message_id) # ← يثبت تلقائي ويلغي القديم
+            except Exception as e:
+                await send_error_to_admin(f"check_dollar:\n{traceback.format_exc()}")
         await asyncio.sleep(DOLLAR_INTERVAL)
 
 async def check_salaries():
@@ -159,9 +173,12 @@ async def check_salaries():
                             if not config["silent_mode"]:
                                 klesha = make_klesha(no3, text, link)
                                 keyboard = [[InlineKeyboardButton("📄 المصدر الرسمي", url=link)]]
-                                await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+                                msg = await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+                                config["last_salary_msg_id"] = msg.message_id # ← نحفظ ايدي آخر منشور
+                                save_config()
                             await asyncio.sleep(5)
-            except: pass
+            except Exception as e:
+                await send_error_to_admin(f"check_salaries:\n{traceback.format_exc()}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def check_user_joined(user_id):
@@ -196,6 +213,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="get_dollar")],
         [InlineKeyboardButton("📰 جلب الاخبار", callback_data="get_news")],
+        [InlineKeyboardButton("🗑️ حذف آخر منشور", callback_data="del_last_post")], # ← جديد
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="backup")], # ← جديد
         [InlineKeyboardButton("📢 اذاعة", callback_data="broadcast"), InlineKeyboardButton("▶️⏸️ تشغيل/ايقاف", callback_data="toggle")],
         [InlineKeyboardButton("🔕 صامت", callback_data="silent"), InlineKeyboardButton("💵 دولار تلقائي", callback_data="toggle_dollar")],
         [InlineKeyboardButton("📌 الغاء تثبيت الدولار", callback_data="unpin_dollar")],
@@ -235,6 +254,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text + "\n\n❌ ماكو صورة بروفايل", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except:
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    elif data == "del_last_post": # ← جديد
+        if config.get("last_salary_msg_id"):
+            try:
+                await bot.delete_message(CHANNEL_ID, config["last_salary_msg_id"])
+                config["last_salary_msg_id"] = None
+                save_config()
+                await query.edit_message_text("✅ تم حذف آخر منشور رواتب\n\n/admin")
+            except:
+                await query.edit_message_text("❌ فشل الحذف - يمكن المنشور محذوف اصلا\n\n/admin")
+        else:
+            await query.edit_message_text("❌ ماكو منشور محفوظ\n\n/admin")
+    elif data == "backup": # ← جديد
+        try:
+            await bot.send_document(user_id, document=open(CONFIG_FILE, 'rb'), caption=f"💾 نسخة احتياطية\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            await query.edit_message_text("✅ دزيتلك النسخة الاحتياطية عالخاص\n\n/admin")
+        except:
+            await query.edit_message_text("❌ فشل - لازم تراسل البوت /start اول\n\n/admin")
     elif data == "toggle":
         config["is_running"] = not config["is_running"]
         save_config()
@@ -294,7 +330,9 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message.text: await bot.send_message(CHANNEL_ID, update.message.text_html, parse_mode='HTML')
         elif update.message.photo: await bot.send_photo(CHANNEL_ID, update.message.photo[-1].file_id, caption=update.message.caption_html, parse_mode='HTML')
         await update.message.reply_text("✅ تم\n\n/admin")
-    except Exception as e: await update.message.reply_text(f"❌ {e}")
+    except Exception as e:
+        await send_error_to_admin(f"broadcast_send:\n{traceback.format_exc()}")
+        await update.message.reply_text(f"❌ {e}")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,9 +359,12 @@ async def manual_check_once():
                             if not link.startswith('http'): link = data["url"]
                             klesha = make_klesha(no3, text, link)
                             keyboard = [[InlineKeyboardButton("📄 المصدر الرسمي", url=link)]]
-                            await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+                            msg = await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+                            config["last_salary_msg_id"] = msg.message_id # ← نحفظ ايدي آخر منشور
+                            save_config()
                         await asyncio.sleep(3)
-        except: pass
+        except Exception as e:
+            await send_error_to_admin(f"manual_check_once:\n{traceback.format_exc()}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id in config["admin_ids"]:
