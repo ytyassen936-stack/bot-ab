@@ -114,9 +114,14 @@ def save_config():
 config = load_config()
 
 async def send_error_to_admin(error_text):
+    # نتجاهل كل اخطاء الاتصال والمواقع - ما نرسل شي
+    skip_errors = ["MaxRetryError", "NameResolutionError", "ConnectionError", "Timeout", "SSLError", "NewConnectionError", "gaierror", "URLError"]
+    if any(err in error_text for err in skip_errors):
+        print(f"⚠️ خطأ اتصال تم تجاهله")
+        return
     for admin_id in config["admin_ids"]:
         try:
-            await bot.send_message(admin_id, f"❌ **صار خطأ بالبوت:**\n\n<code>{error_text[:3000]}</code>", parse_mode='HTML')
+            await bot.send_message(admin_id, f"❌ **خطأ مهم بالبوت:**\n\n<code>{error_text[:3000]}</code>", parse_mode='HTML')
         except: pass
 
 async def get_latest_news():
@@ -134,7 +139,6 @@ async def get_latest_news():
             news_list.append(f"• [{title}]({link})")
         return "\n\n".join(news_list) if news_list else "ما لكيت اخبار حاليا"
     except Exception as e:
-        await send_error_to_admin(f"get_latest_news:\n{traceback.format_exc()}")
         return f"❌ صار خطأ: {str(e)[:100]}"
 
 def get_dollar_prices():
@@ -235,7 +239,7 @@ async def pin_dollar_message(message_id):
         config["dollar_msg_id"] = message_id
         save_config()
     except Exception as e:
-        await send_error_to_admin(f"pin_dollar_message:\n{traceback.format_exc()}")
+        pass
 
 def make_klesha(no3, title, link):
     date = datetime.now().strftime("%Y/%m/%d - %H:%M")
@@ -251,7 +255,7 @@ async def check_dollar():
                     msg = await bot.send_message(CHANNEL_ID, post, parse_mode='Markdown')
                     await pin_dollar_message(msg.message_id)
             except Exception as e:
-                await send_error_to_admin(f"check_dollar:\n{traceback.format_exc()}")
+                pass
         await asyncio.sleep(DOLLAR_INTERVAL)
 
 async def check_salaries():
@@ -262,8 +266,8 @@ async def check_salaries():
         for no3, data in config["sources"].items():
             if not data["enabled"]: continue
             try:
-                print(f"جاري فحص: {no3} - {data['url']}")
-                res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, verify=False)
+                print(f"جاري فحص: {no3}")
+                res = requests.get(data["url"], timeout=12, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
                 soup = BeautifulSoup(res.text, 'html.parser')
                 news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p', 'span', 'div'], limit=50)
                 for item in news_items:
@@ -285,9 +289,9 @@ async def check_salaries():
                                 save_config()
                                 print(f"✅ تم نشر خبر رواتب من: {no3}")
                             await asyncio.sleep(5)
-            except Exception as e:
-                print(f"❌ خطأ في {no3}: {str(e)[:100]}")
-                await send_error_to_admin(f"check_salaries - {no3}:\n{traceback.format_exc()}")
+            except Exception:
+                print(f"⚠️ تخطي {no3}")
+                continue
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def check_user_joined(user_id):
@@ -441,7 +445,6 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message.photo: await bot.send_photo(CHANNEL_ID, update.message.photo[-1].file_id, caption=update.message.caption_html, parse_mode='HTML')
         await update.message.reply_text("✅ تم\n\n/admin")
     except Exception as e:
-        await send_error_to_admin(f"broadcast_send:\n{traceback.format_exc()}")
         await update.message.reply_text(f"❌ {e}")
     return ConversationHandler.END
 
@@ -453,7 +456,7 @@ async def manual_check_once():
     for no3, data in config["sources"].items():
         if not data["enabled"]: continue
         try:
-            res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, verify=False)
+            res = requests.get(data["url"], timeout=12, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
             soup = BeautifulSoup(res.text, 'html.parser')
             news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p', 'span', 'div'], limit=50)
             for item in news_items:
@@ -473,8 +476,8 @@ async def manual_check_once():
                             config["last_salary_msg_id"] = msg.message_id
                             save_config()
                         await asyncio.sleep(3)
-        except Exception as e:
-            await send_error_to_admin(f"manual_check_once:\n{traceback.format_exc()}")
+        except Exception:
+            continue # نتجاهل اي خطأ تماماً
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id in config["admin_ids"]:
