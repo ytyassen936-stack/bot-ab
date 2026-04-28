@@ -1,4 +1,5 @@
 import requests
+import re
 from bs4 import BeautifulSoup
 from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
@@ -30,7 +31,7 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except:
-        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 0, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
+        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 1550, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
 
 def save_config():
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -40,26 +41,54 @@ config = load_config()
 
 def get_dollar_prices():
     buy_price = 1310
-    sell_prices = []
+    sell_price = 0
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+    # 1. نجرب موقع البنك المركزي
     try:
-        res = requests.get("https://www.iraqidinarchat.com/", timeout=15, verify=False)
+        res = requests.get("https://cbi.iq/", timeout=15, verify=False, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         text = soup.get_text()
-        for line in text.split('\n'):
-            if ("بغداد" in line or "الكفاح" in line or "بيع" in line) and any(c.isdigit() for c in line):
-                nums = [int(s) for s in line.split() if s.isdigit() and len(s) >= 4]
-                for num in nums:
-                    if 1450 <= num <= 1600: sell_prices.append(num)
-                    elif 145000 <= num <= 160000: sell_prices.append(num // 100)
+        prices = re.findall(r'1[45]\d{2}', text)
+        for p in prices:
+            p = int(p)
+            if 1450 <= p <= 1600:
+                sell_price = p
+                break
     except: pass
-    try:
-        res = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=15)
-        data = res.json()
-        if 'rates' in data and 'IQD' in data['rates']:
-            market = int(data['rates']['IQD'])
-            if 1400 <= market <= 1600: sell_prices.append(market)
-    except: pass
-    sell_price = int(sum(sell_prices) / len(sell_prices)) if sell_prices else config.get("last_sell", 1550)
+
+    # 2. نجرب موقع السومرية
+    if sell_price == 0:
+        try:
+            res = requests.get("https://www.alsumaria.tv/news/economy", timeout=15, verify=False, headers=headers)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            text = soup.get_text()
+            prices = re.findall(r'1[45]\d{2}', text)
+            for p in prices:
+                p = int(p)
+                if 1450 <= p <= 1600:
+                    sell_price = p
+                    break
+        except: pass
+
+    # 3. نجرب موقع بغداد اليوم
+    if sell_price == 0:
+        try:
+            res = requests.get("https://baghdadtoday.news/economy", timeout=15, verify=False, headers=headers)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            text = soup.get_text()
+            prices = re.findall(r'1[45]\d{2}', text)
+            for p in prices:
+                p = int(p)
+                if 1450 <= p <= 1600:
+                    sell_price = p
+                    break
+        except: pass
+
+    # 4. اذا فشل كلشي، استخدم آخر سعر محفوظ
+    if sell_price == 0:
+        sell_price = config.get("last_sell", 1550)
+
     return {"buy": buy_price, "sell": sell_price}
 
 def make_dollar_post(prices):
@@ -68,7 +97,7 @@ def make_dollar_post(prices):
     buy = prices["buy"]
     sell = prices["sell"]
     old_buy = config.get("last_buy", 1310)
-    old_sell = config.get("last_sell", 0)
+    old_sell = config.get("last_sell", 1550)
     if old_buy!= buy: config["last_buy_date"] = date_now
     if old_sell!= sell and old_sell!= 0: config["last_sell_date"] = date_now
     if old_buy == buy: change_buy = "➡️ استقرار"
@@ -110,7 +139,7 @@ async def check_dollar():
     while True:
         if config["dollar_enabled"] and not config["silent_mode"]:
             prices = get_dollar_prices()
-            if prices["sell"]!= config.get("last_sell", 0):
+            if prices["sell"]!= config.get("last_sell", 1550):
                 post = make_dollar_post(prices)
                 msg = await bot.send_message(CHANNEL_ID, post, parse_mode='Markdown')
                 await pin_dollar_message(msg.message_id)
@@ -173,7 +202,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     silent = "🔕 مفعل" if config["silent_mode"] else "🔔 معطل"
     dollar = "💵 مفعل" if config["dollar_enabled"] else "💵 معطل"
     pinned = "📌 مثبت" if config.get("dollar_msg_id") else "❌ غير مثبت"
-    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 0):,}\n"
+    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 1550):,}\n"
     keyboard = [[InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")], [InlineKeyboardButton("💵 اسعار الدولار", callback_data="get_dollar")], [InlineKeyboardButton("📢 اذاعة", callback_data="broadcast"), InlineKeyboardButton("▶️⏸️ تشغيل/ايقاف", callback_data="toggle")], [InlineKeyboardButton("🔕 صامت", callback_data="silent"), InlineKeyboardButton("💵 دولار تلقائي", callback_data="toggle_dollar")], [InlineKeyboardButton("📌 الغاء تثبيت الدولار", callback_data="unpin_dollar")], [InlineKeyboardButton("🔄 فحص يدوي", callback_data="manual_check"), InlineKeyboardButton("🔄 تحديث", callback_data="refresh")]]
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
