@@ -4,3 +4,4 @@ beautifulsoup4
 nest_asyncio
 lxml
 pytz
+imghdr
