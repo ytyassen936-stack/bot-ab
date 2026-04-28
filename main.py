@@ -51,7 +51,61 @@ def load_config():
                 data["last_buy"] = 1310
             return data
     except:
-        return {"last_news": [], "is_running": True, "silent_mode": False, "dollar_enabled": True, "last_buy": 1310, "last_sell": 1550, "last_buy_date": "", "last_sell_date": "", "dollar_msg_id": None, "last_salary_msg_id": None, "admin_ids": ADMIN_IDS, "sources": {"الرعاية والمتقاعدين": {"url": "https://molsa.gov.iq/", "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين"], "enabled": True}, "المعين المتفرغ": {"url": "https://molsa.gov.iq/", "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة"], "enabled": True}, "الموظفين": {"url": "https://mof.gov.iq/", "keywords": ["تمويل", "رواتب", "الموظفين"], "enabled": True}}}
+        return {
+            "last_news": [],
+            "is_running": True,
+            "silent_mode": False,
+            "dollar_enabled": True,
+            "last_buy": 1310,
+            "last_sell": 1550,
+            "last_buy_date": "",
+            "last_sell_date": "",
+            "dollar_msg_id": None,
+            "last_salary_msg_id": None,
+            "admin_ids": ADMIN_IDS,
+            "sources": {
+                "الرعاية والمتقاعدين": {
+                    "url": "https://molsa.gov.iq/",
+                    "keywords": ["اطلاق", "صرف", "رواتب", "الرعاية", "المتقاعدين", "تمويل", "مستحقات"],
+                    "enabled": True
+                },
+                "المعين المتفرغ": {
+                    "url": "https://molsa.gov.iq/",
+                    "keywords": ["المعين", "المتفرغ", "ذوي الاعاقة", "راتب", "مستحقات"],
+                    "enabled": True
+                },
+                "الموظفين": {
+                    "url": "https://mof.gov.iq/",
+                    "keywords": ["تمويل", "رواتب", "الموظفين", "اطلاق", "الوزارات"],
+                    "enabled": True
+                },
+                "التقاعد العامة": {
+                    "url": "https://www.pension-app.com/",
+                    "keywords": ["صرف", "رواتب", "المتقاعدين", "تمويل", "دفعة"],
+                    "enabled": True
+                },
+                "وزارة المالية": {
+                    "url": "https://mof.gov.iq/Pages/Main.aspx",
+                    "keywords": ["تمويل", "رواتب", "الوزارات", "اطلاق", "صرف"],
+                    "enabled": True
+                },
+                "السومرية نيوز": {
+                    "url": "https://www.alsumaria.tv/news/localnews",
+                    "keywords": ["رواتب", "صرف", "اطلاق", "المتقاعدين", "الرعاية", "الموظفين"],
+                    "enabled": True
+                },
+                "وكالة الانباء العراقية": {
+                    "url": "https://ina.iq/",
+                    "keywords": ["رواتب", "صرف", "المالية", "العمل", "تمويل", "اطلاق"],
+                    "enabled": True
+                },
+                "شبكة الاعلام العراقي": {
+                    "url": "https://imn.iq/",
+                    "keywords": ["رواتب", "اطلاق", "صرف", "المتقاعدين", "المالية"],
+                    "enabled": True
+                }
+            }
+        }
 
 def save_config():
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -88,38 +142,13 @@ def get_dollar_prices():
     sell_prices = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-    # قائمة المصادر - يمشي عليهم واحد واحد لحد ما يلكه سعر
     sources = [
-        {
-            "name": "عراقي دينار شات",
-            "url": "https://www.iraqidinarchat.com/",
-            "check": lambda text: any(kw in text for kw in ["بغداد", "الكفاح", "بيع", "sell"])
-        },
-        {
-            "name": "البنك المركزي",
-            "url": "https://cbi.iq/page/26",
-            "check": lambda text: "سعر الصرف" in text or "Exchange" in text
-        },
-        {
-            "name": "السومرية نيوز",
-            "url": "https://www.alsumaria.tv/news/economy",
-            "check": lambda text: "دولار" in text and "بيع" in text
-        },
-        {
-            "name": "IQD Guru",
-            "url": "https://iqd.exchangerate.guru/",
-            "check": lambda text: "1 USD =" in text
-        },
-        {
-            "name": "Wise",
-            "url": "https://wise.com/us/currency-converter/usd-to-iqd-rate",
-            "check": lambda text: "1 USD" in text
-        },
-        {
-            "name": "ExchangeRate API",
-            "url": "https://api.exchangerate-api.com/v4/latest/USD",
-            "check": lambda text: "IQD" in text
-        }
+        {"name": "عراقي دينار شات", "url": "https://www.iraqidinarchat.com/"},
+        {"name": "البنك المركزي", "url": "https://cbi.iq/page/26"},
+        {"name": "السومرية نيوز", "url": "https://www.alsumaria.tv/news/economy"},
+        {"name": "IQD Guru", "url": "https://iqd.exchangerate.guru/"},
+        {"name": "Wise", "url": "https://wise.com/us/currency-converter/usd-to-iqd-rate"},
+        {"name": "ExchangeRate API", "url": "https://api.exchangerate-api.com/v4/latest/USD"}
     ]
 
     for source in sources:
@@ -133,32 +162,31 @@ def get_dollar_prices():
                     if 1400 <= market <= 1600:
                         sell_prices.append(market)
                         print(f"✅ نجح {source['name']}: {market}")
+                        break
             else:
                 res = requests.get(source["url"], timeout=15, verify=False, headers=headers)
                 soup = BeautifulSoup(res.text, 'html.parser')
                 text = soup.get_text()
 
-                if source["check"](text):
-                    for line in text.split('\n'):
-                        if any(kw in line for kw in ["بيع", "sell", "السوق", "1 USD"]):
-                            # استخراج كل الارقام من السطر
-                            nums = []
-                            for word in line.replace(',', '').split():
-                                try:
-                                    num = int(float(word))
-                                    if 1400 <= num <= 1600: nums.append(num)
-                                    elif 140000 <= num <= 160000: nums.append(num // 100)
-                                except: continue
+                for line in text.split('\n'):
+                    if any(kw in line for kw in ["بيع", "sell", "السوق", "1 USD", "دولار"]):
+                        nums = []
+                        for word in line.replace(',', '').split():
+                            try:
+                                num = int(float(word))
+                                if 1400 <= num <= 1600: nums.append(num)
+                                elif 140000 <= num <= 160000: nums.append(num // 100)
+                            except: continue
+                        if nums:
                             sell_prices.extend(nums)
+                            print(f"✅ نجح {source['name']}: {nums[0]}")
+                            break
 
-                    if sell_prices:
-                        print(f"✅ نجح {source['name']}: {sell_prices[-1]}")
-                        break # اذا لكه سعر من هذا الموقع، لا يكمل للباقي
+                if sell_prices: break
         except Exception as e:
             print(f"❌ فشل {source['name']}: {str(e)[:50]}")
             continue
 
-    # اذا لكه اسعار احسب المتوسط، اذا لا استخدم القديم بس مو صفر
     if sell_prices:
         sell_price = int(sum(sell_prices) / len(sell_prices))
         print(f"السعر النهائي المحسوب: {sell_price}")
@@ -234,9 +262,10 @@ async def check_salaries():
         for no3, data in config["sources"].items():
             if not data["enabled"]: continue
             try:
-                res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+                print(f"جاري فحص: {no3} - {data['url']}")
+                res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, verify=False)
                 soup = BeautifulSoup(res.text, 'html.parser')
-                news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p'], limit=30)
+                news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p', 'span', 'div'], limit=50)
                 for item in news_items:
                     text = item.get_text(strip=True)
                     link = item.get('href') or data["url"]
@@ -244,7 +273,7 @@ async def check_salaries():
                         news_id = f"{no3}-{text[:60]}"
                         if news_id not in config["last_news"] and len(text) > 25:
                             config["last_news"].append(news_id)
-                            if len(config["last_news"]) > 50: config["last_news"].pop(0)
+                            if len(config["last_news"]) > 100: config["last_news"].pop(0)
                             save_config()
                             if link.startswith('/'): link = data["url"].rstrip('/') + link
                             if not link.startswith('http'): link = data["url"]
@@ -254,9 +283,11 @@ async def check_salaries():
                                 msg = await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
                                 config["last_salary_msg_id"] = msg.message_id
                                 save_config()
+                                print(f"✅ تم نشر خبر رواتب من: {no3}")
                             await asyncio.sleep(5)
             except Exception as e:
-                await send_error_to_admin(f"check_salaries:\n{traceback.format_exc()}")
+                print(f"❌ خطأ في {no3}: {str(e)[:100]}")
+                await send_error_to_admin(f"check_salaries - {no3}:\n{traceback.format_exc()}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def check_user_joined(user_id):
@@ -286,7 +317,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     silent = "🔕 مفعل" if config["silent_mode"] else "🔔 معطل"
     dollar = "💵 مفعل" if config["dollar_enabled"] else "💵 معطل"
     pinned = "📌 مثبت" if config.get("dollar_msg_id") else "❌ غير مثبت"
-    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 1550):,}\n"
+    sources_count = len([s for s in config["sources"].values() if s["enabled"]])
+    text = f"\n⚙️ **لوحة تحكم @w_3_vv**\n\n📊 الحالة: {status} | الصامت: {silent}\n💵 الدولار: {dollar} | {pinned}\n🏦 شراء: {config.get('last_buy', 1310):,} | 🏪 بيع: {config.get('last_sell', 1550):,}\n📰 مصادر الرواتب: {sources_count} مفعلة\n"
     keyboard = [
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="get_dollar")],
@@ -391,9 +423,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await query.edit_message_text("❌ لازم تراسل البوت /start اول شي\n\n/admin")
     elif data == "manual_check":
-        await query.edit_message_text("⏳ جاري الفحص...")
+        await query.edit_message_text("⏳ جاري الفحص من 8 مصادر...")
         await manual_check_once()
-        await query.edit_message_text("✅ تم\n\n/admin")
+        await query.edit_message_text("✅ تم الفحص\n\n/admin")
     elif data == "refresh":
         await admin_panel(update, context)
 
@@ -421,9 +453,9 @@ async def manual_check_once():
     for no3, data in config["sources"].items():
         if not data["enabled"]: continue
         try:
-            res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+            res = requests.get(data["url"], timeout=30, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, verify=False)
             soup = BeautifulSoup(res.text, 'html.parser')
-            news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p'], limit=30)
+            news_items = soup.find_all(['h1', 'h2', 'h3', 'a', 'p', 'span', 'div'], limit=50)
             for item in news_items:
                 text = item.get_text(strip=True)
                 link = item.get('href') or data["url"]
