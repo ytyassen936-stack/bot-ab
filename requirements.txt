@@ -5,3 +5,4 @@ nest_asyncio
 lxml
 pytz
 standard-imghdr
+urllib3==1.26.18
