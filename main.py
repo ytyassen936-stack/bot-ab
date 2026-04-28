@@ -10,6 +10,22 @@ import urllib3
 import warnings
 import json
 import traceback
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# سيرفر وهمي حتى Render ما يزعل
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+
+def run_server():
+    port = int(os.environ.get('PORT', 10000))
+    httpd = HTTPServer(('', port), Handler)
+    httpd.serve_forever()
+
+Thread(target=run_server, daemon=True).start()
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
