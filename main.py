@@ -10,6 +10,9 @@ import nest_asyncio
 import urllib3
 import warnings
 import json
+import threading
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
@@ -43,8 +46,6 @@ def get_dollar_prices():
     buy_price = 1310
     sell_price = 0
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-
-    # 1. نجرب موقع البنك المركزي
     try:
         res = requests.get("https://cbi.iq/", timeout=15, verify=False, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -56,8 +57,6 @@ def get_dollar_prices():
                 sell_price = p
                 break
     except: pass
-
-    # 2. نجرب موقع السومرية
     if sell_price == 0:
         try:
             res = requests.get("https://www.alsumaria.tv/news/economy", timeout=15, verify=False, headers=headers)
@@ -70,8 +69,6 @@ def get_dollar_prices():
                     sell_price = p
                     break
         except: pass
-
-    # 3. نجرب موقع بغداد اليوم
     if sell_price == 0:
         try:
             res = requests.get("https://baghdadtoday.news/economy", timeout=15, verify=False, headers=headers)
@@ -84,11 +81,8 @@ def get_dollar_prices():
                     sell_price = p
                     break
         except: pass
-
-    # 4. اذا فشل كلشي، استخدم آخر سعر محفوظ
     if sell_price == 0:
         sell_price = config.get("last_sell", 1550)
-
     return {"buy": buy_price, "sell": sell_price}
 
 def make_dollar_post(prices):
@@ -340,6 +334,22 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     print("بوت قناة @w_3_vv اشتغل...")
     app.run_polling(stop_signals=None, read_timeout=60, write_timeout=60, connect_timeout=60)
+
+# خدعة Render - سيرفر وهمي عشان المنفذ
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+    def log_message(self, format, *args):
+        return
+
+def run_dummy_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
 
 if __name__ == '__main__':
     main()
