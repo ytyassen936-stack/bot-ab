@@ -6,7 +6,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Callb
 from telegram.request import HTTPXRequest
 from datetime import datetime
 import asyncio
-import nest_asyncio
 import urllib3
 import warnings
 import json
@@ -14,7 +13,6 @@ import traceback
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
-nest_asyncio.apply()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -143,7 +141,7 @@ async def check_dollar():
                 if prices["sell"]!= config.get("last_sell", 0):
                     post = make_dollar_post(prices)
                     msg = await bot.send_message(CHANNEL_ID, post, parse_mode='Markdown')
-                    await pin_dollar_message(msg.message_id) # ← يثبت تلقائي ويلغي القديم
+                    await pin_dollar_message(msg.message_id)
             except Exception as e:
                 await send_error_to_admin(f"check_dollar:\n{traceback.format_exc()}")
         await asyncio.sleep(DOLLAR_INTERVAL)
@@ -174,7 +172,7 @@ async def check_salaries():
                                 klesha = make_klesha(no3, text, link)
                                 keyboard = [[InlineKeyboardButton("📄 المصدر الرسمي", url=link)]]
                                 msg = await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
-                                config["last_salary_msg_id"] = msg.message_id # ← نحفظ ايدي آخر منشور
+                                config["last_salary_msg_id"] = msg.message_id
                                 save_config()
                             await asyncio.sleep(5)
             except Exception as e:
@@ -213,8 +211,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="get_dollar")],
         [InlineKeyboardButton("📰 جلب الاخبار", callback_data="get_news")],
-        [InlineKeyboardButton("🗑️ حذف آخر منشور", callback_data="del_last_post")], # ← جديد
-        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="backup")], # ← جديد
+        [InlineKeyboardButton("🗑️ حذف آخر منشور", callback_data="del_last_post")],
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="backup")],
         [InlineKeyboardButton("📢 اذاعة", callback_data="broadcast"), InlineKeyboardButton("▶️⏸️ تشغيل/ايقاف", callback_data="toggle")],
         [InlineKeyboardButton("🔕 صامت", callback_data="silent"), InlineKeyboardButton("💵 دولار تلقائي", callback_data="toggle_dollar")],
         [InlineKeyboardButton("📌 الغاء تثبيت الدولار", callback_data="unpin_dollar")],
@@ -254,7 +252,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text + "\n\n❌ ماكو صورة بروفايل", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except:
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    elif data == "del_last_post": # ← جديد
+    elif data == "del_last_post":
         if config.get("last_salary_msg_id"):
             try:
                 await bot.delete_message(CHANNEL_ID, config["last_salary_msg_id"])
@@ -265,7 +263,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ فشل الحذف - يمكن المنشور محذوف اصلا\n\n/admin")
         else:
             await query.edit_message_text("❌ ماكو منشور محفوظ\n\n/admin")
-    elif data == "backup": # ← جديد
+    elif data == "backup":
         try:
             await bot.send_document(user_id, document=open(CONFIG_FILE, 'rb'), caption=f"💾 نسخة احتياطية\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
             await query.edit_message_text("✅ دزيتلك النسخة الاحتياطية عالخاص\n\n/admin")
@@ -360,7 +358,7 @@ async def manual_check_once():
                             klesha = make_klesha(no3, text, link)
                             keyboard = [[InlineKeyboardButton("📄 المصدر الرسمي", url=link)]]
                             msg = await bot.send_message(CHANNEL_ID, klesha, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
-                            config["last_salary_msg_id"] = msg.message_id # ← نحفظ ايدي آخر منشور
+                            config["last_salary_msg_id"] = msg.message_id
                             save_config()
                         await asyncio.sleep(3)
         except Exception as e:
@@ -376,7 +374,7 @@ async def post_init(application):
     asyncio.create_task(check_salaries())
     asyncio.create_task(check_dollar())
 
-def main():
+async def main():
     app = ApplicationBuilder().token(TOKEN).request(request).post_init(post_init).build()
     conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(broadcast_start, pattern="^broadcast$")], states={BROADCAST: [MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_send)]}, fallbacks=[CommandHandler("cancel", cancel)], per_message=False, per_chat=True, per_user=True)
     app.add_handler(CommandHandler("start", start))
@@ -385,7 +383,7 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(button_handler))
     print("بوت قناة @w_3_vv اشتغل...")
-    app.run_polling(stop_signals=None, read_timeout=60, write_timeout=60, connect_timeout=60)
+    await app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
