@@ -390,7 +390,8 @@ async def post_init(application):
     asyncio.create_task(check_salaries())
     asyncio.create_task(check_dollar())
 
-async def main():
+# شلنا async def main() كله وحطينا التشغيل مباشر
+if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).request(request).post_init(post_init).build()
     conv_handler = ConversationHandler(entry_points=[CallbackQueryHandler(broadcast_start, pattern="^broadcast$")], states={BROADCAST: [MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_send)]}, fallbacks=[CommandHandler("cancel", cancel)], per_message=False, per_chat=True, per_user=True)
     app.add_handler(CommandHandler("start", start))
@@ -399,7 +400,4 @@ async def main():
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(button_handler))
     print("بوت قناة @w_3_vv اشتغل...")
-    await app.run_polling()
-
-if __name__ == '__main__':
-    asyncio.run(main())
+    app.run_polling(close_loop=False) # هذا السطر هو الوحيد اللي يشغل البوت
