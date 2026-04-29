@@ -8,11 +8,10 @@ from telegram.error import TelegramError
 
 # ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0")) # لازم رقم مثل -1001234567890
-CHANNEL_USERNAME = "@w_3_vv" # يوزر قناتك للزر بس
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002350481912")) # ID قناتك
+CHANNEL_USERNAME = "@w_3_vv"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# معلومات المطور
 DEV_NAME = "مطور البوت @w3vv"
 DEV_USERNAME = "@w_3_vv"
 
@@ -23,22 +22,22 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# ========== مصادر الرواتب المحدثة - صفحات الاخبار ==========
+# ========== مصادر الرواتب - روابط محدثة ==========
 SALARY_SOURCES = {
     "الرعاية الاجتماعية والمتقاعدين": {
         "URL": "https://molsa.gov.iq/ar/news",
         "KEYWORDS": ["نحن", "نا", "رواتب", "الرواتب", "دفعة", "اطلاق", "صرف", "مستحقات", "الوجبة", "ملحق"]
     },
     "البيان الرسمي لوزارة المالية": {
-        "URL": "https://www.mof.gov.iq/Pages/MOFBannerHeadlineDetail.aspx",
+        "URL": "https://mof.gov.iq/News",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية", "الموازنة", "حسابات", "استحقاق"]
     },
     "وزارة التربية": {
-        "URL": "https://moedu.gov.iq/index.php/category/اخبار-الوزارة/",
+        "URL": "https://moedu.gov.iq/index.php?name=News",
         "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين", "المدرسين", "الكوادر", "محاضرين"]
     },
     "وزارة الصحة": {
-        "URL": "https://moh.gov.iq/?page=12",
+        "URL": "https://moh.gov.iq/index.php?name=News",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
     },
     "وزارة الدفاع": {
@@ -46,33 +45,31 @@ SALARY_SOURCES = {
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
     },
     "وزارة الداخلية": {
-        "URL": "https://moi.gov.iq/index.php/news",
+        "URL": "https://moi.gov.iq/index.php?name=News",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"]
     },
     "وزارة التعليم العالي": {
-        "URL": "https://mohesr.gov.iq/ar/news",
+        "URL": "https://mohesr.gov.iq/ar/node",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "التعليم", "الجامعات", "التدريسيين"]
     },
     "وزارة الكهرباء": {
-        "URL": "https://moelc.gov.iq/category/اخبار-الوزارة",
+        "URL": "https://moelc.gov.iq/index.php?name=News",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الكهرباء", "منتسبي"]
     }
 }
 
-# ========== كلمات النفي للفحص الذكي ==========
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
 
-# ========== فحص الاشتراك الاجباري - محدث ==========
+# ========== فحص الاشتراك الاجباري - مع طباعة الخطأ ==========
 async def is_subscribed(user_id):
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        print(f"فحص العضو {user_id}: {member.status}")
         return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
     except TelegramError as e:
-        print(f"خطأ فحص الاشتراك: {e}")
-        # اذا البوت مو ادمن يرجع True علمود ما يحظر الكل
-        return True
+        print(f"خطأ فحص الاشتراك: {e}") # شوف هذا باللوجز
+        return True # نمرره اذا صار خطأ
 
-# ========== دوال التكوين ==========
 def load_config():
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -101,7 +98,6 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-# ========== الفحص الذكي ==========
 def is_real_news(text, keyword):
     keyword_pos = text.find(keyword)
     if keyword_pos == -1: return False
@@ -111,14 +107,13 @@ def is_real_news(text, keyword):
             return False
     return True
 
-# ========== دوال الفحص المحدثة ==========
 async def fetch_url(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
+        'Referer': 'https://www.google.com/',
+        'Connection': 'keep-alive'
     }
     try:
         r = await client.get(url, headers=headers, follow_redirects=True, timeout=20.0)
@@ -135,6 +130,8 @@ async def check_single_source(name, source, config, silent=True):
     if status!= 200:
         if status == 403:
             return f"🚫 {name}: محظور 403"
+        elif status == 404:
+            return f"🔴 {name}: خطأ 404"
         elif status == 0:
             return f"🔴 {name}: الموقع واقع"
         else:
@@ -180,10 +177,9 @@ async def check_salaries(silent=True):
     for name, source in SALARY_SOURCES.items():
         result = await check_single_source(name, source, config, silent)
         results.append(result)
-        await asyncio.sleep(1)
+        await asyncio.sleep(1.5)
     return results
 
-# ========== فحص الدولار ==========
 async def check_dollar():
     config = load_config()
     if not config["is_running"] or not config["dollar_enabled"]: return False
@@ -197,7 +193,6 @@ async def check_dollar():
 
             if buy!= config["آخر عملية شراء"] or sell!= config["آخر عملية بيع"]:
                 now = datetime.now().strftime("%Y/%m/%d - %H:%M")
-
                 msg = f"""💵 اسعار صرف الدولار الحالية 💵
 
 البنك المركزي - الشراء 🏦
@@ -232,13 +227,11 @@ async def check_dollar():
     except: pass
     return False
 
-# ========== كليشة سعر الصرف ==========
 def get_dollar_message():
     config = load_config()
     buy = config['آخر عملية شراء']
     sell = config['آخر عملية بيع']
     now = datetime.now().strftime("%Y/%m/%d - %H:%M")
-
     msg = f"""💵 اسعار صرف الدولار الحالية 💵
 
 البنك المركزي - الشراء 🏦
@@ -253,14 +246,12 @@ def get_dollar_message():
 تابع قناتنا @w3vv لكل جديد"""
     return msg
 
-# ========== لوحة التحكم ==========
 def get_admin_panel(config):
     enabled_count = sum(1 for s in config["مصادر"].values() if s.get("enabled", True))
     status_run = "شغال" if config['is_running'] else "متوقف"
     status_silent = "مفعل" if config['الوضع الصامت'] else "معطل"
     status_dollar = "مفعل" if config['dollar_enabled'] else "معطل"
     pin_status = "مثبت" if config['dollar_msg_id'] else "غير مثبت"
-
     status_text = f"⚙️ لوحة تحكم @w3vv\n\n📊 الحالة: {status_run} | الصامت: {status_silent} 🔔\n💵 الدولار: {status_dollar} | {pin_status} ❌\n🏦 شراء: {config['آخر عملية شراء']:,} | بيع: {config['آخر عملية بيع']:,}\n📡 مصادر الرواتب: {enabled_count} مفعلة"
 
     keyboard = [
@@ -286,7 +277,6 @@ async def handle_message(update):
         config["users"].append(user_id)
         save_config(config)
 
-    # امر /start مع اشتراك اجباري محدث
     if update.message.text == "/start":
         subscribed = await is_subscribed(user_id)
         if not subscribed:
@@ -352,7 +342,6 @@ async def handle_callback(update):
     user_id = query.from_user.id
     await query.answer()
 
-    # زر التحقق من الاشتراك - محدث
     if data == "check_sub":
         subscribed = await is_subscribed(user_id)
         if subscribed:
@@ -368,14 +357,12 @@ async def handle_callback(update):
             await query.answer("❌ انت بعدك ما مشترك بالقناة", show_alert=True)
         return
 
-    # فحص الاشتراك قبل كل زر
     if data in ["dev_info_user", "sarf_user"]:
         subscribed = await is_subscribed(user_id)
         if not subscribed:
             await query.answer("⚠️ اشترك بالقناة اولاً", show_alert=True)
             return
 
-    # ازرار عامة للكل - صورة المطور تلقائي من البروفايل
     if data == "dev_info_user":
         caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: {CHANNEL_USERNAME}\n💬 للتواصل: {DEV_USERNAME}"
         try:
@@ -392,7 +379,6 @@ async def handle_callback(update):
         await bot.send_message(chat_id=user_id, text=get_dollar_message())
         return
 
-    # ازرار الادمن فقط
     if user_id!= ADMIN_ID:
         await query.answer("غير مصرح لك")
         return
@@ -480,14 +466,13 @@ async def handle_callback(update):
         await query.edit_message_text(text=status_text, reply_markup=keyboard)
     except: pass
 
-# ========== التشغيل الرئيسي ==========
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-
     print("✅ البوت شغال - V2 Pro")
+    print(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
         try:
