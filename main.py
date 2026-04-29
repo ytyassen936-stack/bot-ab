@@ -11,6 +11,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+# معلومات المطور - غيرها
+DEV_NAME = "مطور البوت @w3vv"
+DEV_USERNAME = "@w_3_vv"
+DEV_PHOTO = "https://i.imgur.com/placeholder.jpg" # حط رابط صورتك هنا
+
 CHECK_INTERVAL = 600
 DOLLAR_INTERVAL = 3600
 
@@ -88,7 +93,6 @@ def save_config(config):
 
 # ========== الفحص الذكي ==========
 def is_real_news(text, keyword):
-    """يفحص اذا الخبر حقيقي مو نفي او اشاعة"""
     keyword_pos = text.find(keyword)
     if keyword_pos == -1: return False
     context = text[max(0, keyword_pos-100):keyword_pos+100]
@@ -97,10 +101,17 @@ def is_real_news(text, keyword):
             return False
     return True
 
-# ========== دوال الفحص ==========
+# ========== دوال الفحص المحدثة ==========
 async def fetch_url(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
     try:
-        r = await client.get(url, follow_redirects=True, timeout=15.0)
+        r = await client.get(url, headers=headers, follow_redirects=True, timeout=20.0)
         return r.status_code, r.text
     except Exception as e:
         return 0, str(e)
@@ -109,9 +120,29 @@ async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
         return f"⚪ {name}: معطل"
 
-    status, text = await fetch_url(source["URL"])
+    urls_to_try = [
+        source["URL"],
+        source["URL"] + "news",
+        source["URL"] + "ar",
+        source["URL"] + "ar/news",
+        source["URL"] + "ar/node",
+        source["URL"] + "latest"
+    ]
+
+    status, text = 0, ""
+    for url in urls_to_try:
+        status, text = await fetch_url(url)
+        if status == 200:
+            break
+        await asyncio.sleep(0.5)
+
     if status!= 200:
-        return f"🔴 {name}: خطأ {status}"
+        if status == 403:
+            return f"🚫 {name}: محظور 403"
+        elif status == 0:
+            return f"🔴 {name}: الموقع واقع"
+        else:
+            return f"🔴 {name}: خطأ {status}"
 
     keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
     found_keyword = None
@@ -153,7 +184,7 @@ async def check_salaries(silent=True):
     for name, source in SALARY_SOURCES.items():
         result = await check_single_source(name, source, config, silent)
         results.append(result)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
     return results
 
 # ========== فحص الدولار ==========
@@ -169,8 +200,20 @@ async def check_dollar():
             sell = int(data["data"]["sell"])
 
             if buy!= config["آخر عملية شراء"] or sell!= config["آخر عملية بيع"]:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                msg = f"💵 تحديث أسعار الدولار\n\n🔻 الشراء: {buy:,} د.ع\n🔺 البيع: {sell:,} د.ع\n\n⏰ آخر تحديث: {now}"
+                now = datetime.now().strftime("%Y/%m/%d - %H:%M")
+
+                msg = f"""💵 اسعار صرف الدولار الحالية 💵
+
+البنك المركزي - الشراء 🏦
+الدولار: {buy:,} دينار 🔸
+الورقة: {buy * 100:,} دينار 🔸
+
+السوق - البيع 🏦
+الدولار: {sell:,} دينار 🔸
+الورقة: {sell * 100:,} دينار 🔸
+
+الآن: {now} 🕒
+تابع قناتنا @w3vv لكل جديد"""
 
                 try:
                     if config["dollar_msg_id"]:
@@ -192,6 +235,27 @@ async def check_dollar():
                 return True
     except: pass
     return False
+
+# ========== كليشة سعر الصرف ==========
+def get_dollar_message():
+    config = load_config()
+    buy = config['آخر عملية شراء']
+    sell = config['آخر عملية بيع']
+    now = datetime.now().strftime("%Y/%m/%d - %H:%M")
+
+    msg = f"""💵 اسعار صرف الدولار الحالية 💵
+
+البنك المركزي - الشراء 🏦
+الدولار: {buy:,} دينار 🔸
+الورقة: {buy * 100:,} دينار 🔸
+
+السوق - البيع 🏦
+الدولار: {sell:,} دينار 🔸
+الورقة: {sell * 100:,} دينار 🔸
+
+الآن: {now} 🕒
+تابع قناتنا @w3vv لكل جديد"""
+    return msg
 
 # ========== لوحة التحكم ==========
 def get_admin_panel(config):
@@ -226,38 +290,23 @@ async def handle_message(update):
         config["users"].append(user_id)
         save_config(config)
 
-    # امر /start للكل
+    # امر /start للكل مع زرين
     if update.message.text == "/start":
+        keyboard = [
+            [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
+            [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
+        ]
         await bot.send_message(
             chat_id=update.message.chat.id,
-            text="👋 اهلاً بك\n\nلمعرفة سعر الصرف ارسل /sarf\n\n📢 تابع قناتنا: @w_3_vv"
+            text="👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    # امر /sarf للكل - يعرض سعر الدولار بالكليشة الجديدة
     if update.message.text == "/sarf":
-        config = load_config()
-        buy = config['آخر عملية شراء']
-        sell = config['آخر عملية بيع']
-        now = datetime.now().strftime("%Y/%m/%d - %H:%M")
-
-        msg = f"""💵 اسعار صرف الدولار الحالية 💵
-
-البنك المركزي - الشراء 🏦
-الدولار: {buy:,} دينار 🔸
-الورقة: {buy * 100:,} دينار 🔸
-
-السوق - البيع 🏦
-الدولار: {sell:,} دينار 🔸
-الورقة: {sell * 100:,} دينار 🔸
-
-الآن: {now} 🕒
-تابع قناتنا @w3vv لكل جديد"""
-
-        await bot.send_message(chat_id=update.message.chat.id, text=msg)
+        await bot.send_message(chat_id=update.message.chat.id, text=get_dollar_message())
         return
 
-    # معالجة تعديل الكلمات المفتاحية
     if update.message.from_user.id == ADMIN_ID and config.get("waiting_keywords"):
         source_name = config["waiting_keywords"]
         config["waiting_keywords"] = None
@@ -267,7 +316,6 @@ async def handle_message(update):
         await bot.send_message(chat_id=ADMIN_ID, text=f"✅ تم تحديث كلمات {source_name}:\n{', '.join(new_keywords)}")
         return
 
-    # معالجة الاذاعة
     if update.message.from_user.id == ADMIN_ID and config.get("waiting_broadcast"):
         config["waiting_broadcast"] = False
         save_config(config)
@@ -288,13 +336,27 @@ async def handle_message(update):
 
 async def handle_callback(update):
     query = update.callback_query
+    data = query.data
+    await query.answer()
+
+    # ازرار عامة للكل
+    if data == "dev_info_user":
+        caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: @w_3_vv\n💬 للتواصل: {DEV_USERNAME}"
+        try:
+            await bot.send_photo(chat_id=query.from_user.id, photo=DEV_PHOTO, caption=caption)
+        except:
+            await bot.send_message(chat_id=query.from_user.id, text=caption)
+        return
+    elif data == "sarf_user":
+        await bot.send_message(chat_id=query.from_user.id, text=get_dollar_message())
+        return
+
+    # ازرار الادمن فقط
     if query.from_user.id!= ADMIN_ID:
         await query.answer("غير مصرح لك")
         return
 
     config = load_config()
-    data = query.data
-    await query.answer()
 
     if data == "toggle_run":
         config["is_running"] = not config["is_running"]
@@ -306,7 +368,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text="👨‍💻 مطور البوت: @w_3_vv\n⚙️ اصدار: V2 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V2 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
