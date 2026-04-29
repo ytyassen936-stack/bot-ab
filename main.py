@@ -24,66 +24,77 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
+# ضفت "BANK_DEFAULT" لكل وزارة - اذا ما لكه مصرف بالخبر يستخدم هذا
 SALARY_SOURCES = {
     "وزارة المالية": {
         "TELEGRAM": "Mof_Iraq",
         "DISPLAY": "وزارة المالية",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "وزارة الداخلية": {
         "TELEGRAM": "MOI_Iraq",
         "DISPLAY": "وزارة الداخلية",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "وزارة الدفاع": {
         "TELEGRAM": "MODiraq",
         "DISPLAY": "وزارة الدفاع",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي", "الوجبة"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين" # الدفاع دائماً رافدين اول شي
     },
     "وزارة الصحة": {
         "TELEGRAM": "mohiraq",
         "DISPLAY": "وزارة الصحة",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرشيد"
     },
     "وزارة التربية": {
         "TELEGRAM": "moedu_iq",
         "DISPLAY": "وزارة التربية",
         "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرشيد"
     },
     "هيئة التقاعد الوطنية": {
         "TELEGRAM": "pension_iraq",
         "DISPLAY": "المتقاعدين",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "المتقاعدين", "التقاعد", "المتقاعد", "معين"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "وزارة العمل - الرعاية": {
         "TELEGRAM": "molsa_iq",
         "DISPLAY": "الرعاية الاجتماعية",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الرعاية", "الحماية", "الاجتماعية", "المعين", "المتفرغ"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "هيئة الحشد الشعبي": {
         "TELEGRAM": "teamsmediawar",
         "DISPLAY": "الحشد الشعبي",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الحشد", "الشعبي", "منتسبي"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "هيئة النزاهة": {
         "TELEGRAM": "NazahaIq",
         "DISPLAY": "هيئة النزاهة",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "النزاهة", "منتسبي"],
-        "PRIORITY": 1
+        "PRIORITY": 1,
+        "BANK_DEFAULT": "مصرف الرشيد"
     },
     "وكالة الانباء العراقية": {
         "URL": "https://ina.iq/",
         "DISPLAY": "الوزارات العراقية",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "صرف", "المالية", "الوزارات", "المتقاعدين", "الرعاية"],
-        "PRIORITY": 2
+        "PRIORITY": 2,
+        "BANK_DEFAULT": "مصرف غير محدد"
     }
 }
 
@@ -119,7 +130,7 @@ def load_config():
             "dollar_enabled": True, "آخر عملية شراء": 1310, "آخر عملية بيع": 1550,
             "آخر_تاريخ_للشراء": "", "آخر_تاريخ_للبيع": "", "dollar_msg_id": None,
             "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}, "users": [],
-            "waiting_broadcast": False, "waiting_keywords": None
+            "waiting_broadcast": False, "waiting_keywords": None, "waiting_bank": None
         }
         for name in SALARY_SOURCES:
             config["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
@@ -138,36 +149,36 @@ def is_real_news(text, keyword):
             return False
     return True
 
-def extract_bank(text):
-    # بحث شامل - نفحص 500 حرف من النص
-    text_full = text[:500]
+def extract_bank(text, source_name):
+    # نفحص النص كامل
+    text_full = text[:1000].lower()
 
     # الرافدين
-    if any(x in text_full for x in ["الرافدين", "رافدين", "مصرفالرافدين", "مصرف الرافدين", "الوجبة الاولى الرافدين", "الوجبةالاولىالرافدين", "Rafidain", "rafidain", "الرافدين", "رافدين"]):
+    if any(x in text_full for x in ["رافدين", "الرافدين", "مصرف الرافدين", "مصرفالرافدين", "rafidain", "الوجبة الاولى"]):
         return "مصرف الرافدين"
 
     # الرشيد
-    if any(x in text_full for x in ["الرشيد", "رشيد", "مصرفالرشيد", "مصرف الرشيد", "الوجبة الاولى الرشيد", "Rasheed", "rasheed", "Rashid", "rashid"]):
+    if any(x in text_full for x in ["الرشيد", "رشيد", "مصرف الرشيد", "مصرفالرشيد", "rasheed", "rashid", "الوجبة الثانية"]):
         return "مصرف الرشيد"
 
     # الاهلي
-    if any(x in text_full for x in ["الاهلي", "اهلي", "المصرفالاهلي", "المصرف الاهلي", "اهليعراقي", "Ahli"]):
+    if any(x in text_full for x in ["الاهلي", "اهلي", "المصرف الاهلي", "ahli"]):
         return "المصرف الاهلي"
 
     # TBI
-    if any(x in text_full.lower() for x in ["tbi", "تيبياي", "التجاريالعراقي", "التجاري العراقي", "تجاري"]):
+    if any(x in text_full for x in ["tbi", "تيبياي", "التجاري العراقي", "تجاري"]):
         return "مصرف TBI"
 
     # الصناعي
-    if "صناعي" in text_full or "الصناعي" in text_full:
+    if "صناعي" in text_full:
         return "المصرف الصناعي"
 
     # الزراعي
-    if "زراعي" in text_full or "الزراعي" in text_full:
+    if "زراعي" in text_full:
         return "المصرف الزراعي"
 
-    # اذا ما لكه شي، يرجع غير محدد
-    return "مصرف غير محدد"
+    # اذا ما لكه شي، يستخدم المصرف الافتراضي من SALARY_SOURCES
+    return SALARY_SOURCES[source_name].get("BANK_DEFAULT", "مصرف غير محدد")
 
 async def fetch_url(url):
     headers = {
@@ -182,7 +193,7 @@ async def fetch_url(url):
         logger.error(f"خطأ جلب {url}: {e}")
         return 0, str(e)
 
-async def check_telegram_channel(channel_username, keywords, display_name):
+async def check_telegram_channel(channel_username, keywords, display_name, source_name):
     try:
         url = f"https://t.me/s/{channel_username}"
         status, html = await fetch_url(url)
@@ -191,7 +202,6 @@ async def check_telegram_channel(channel_username, keywords, display_name):
             return False, "", ""
 
         messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
-        # نفحص اخر 20 منشور مو 15
         for msg_html in messages[-20:]:
             text = re.sub(r'<br/?>', '\n', msg_html)
             text = re.sub(r'<[^>]+>', '', text)
@@ -199,7 +209,7 @@ async def check_telegram_channel(channel_username, keywords, display_name):
 
             for keyword in keywords:
                 if keyword in text and is_real_news(text, keyword):
-                    bank = extract_bank(text)
+                    bank = extract_bank(text, source_name)
                     logger.info(f"خبر {display_name}: {text[:100]} | مصرف: {bank}")
                     return True, text[:500], bank
         return False, "", ""
@@ -219,7 +229,7 @@ async def check_single_source(name, source, config, silent=True):
     bank_name = ""
 
     if "TELEGRAM" in source:
-        found, news_text, bank_name = await check_telegram_channel(source["TELEGRAM"], keywords, display_name)
+        found, news_text, bank_name = await check_telegram_channel(source["TELEGRAM"], keywords, display_name, name)
         if not found:
             return f"🔵 {name}: لا يوجد جديد بالقناة"
 
@@ -232,7 +242,7 @@ async def check_single_source(name, source, config, silent=True):
             if keyword in text and is_real_news(text, keyword):
                 found = True
                 news_text = text
-                bank_name = extract_bank(text)
+                bank_name = extract_bank(text, name)
                 break
         if not found:
             return f"🔵 {name}: لا يوجد جديد"
@@ -390,7 +400,8 @@ def get_admin_panel(config):
         [InlineKeyboardButton("🔕 صامت", callback_data="toggle_silent"), InlineKeyboardButton("💵 دولار تلقائي", callback_data="toggle_dollar")],
         [InlineKeyboardButton("📌 الغاء تثبيت الدولار", callback_data="unpin_dollar")],
         [InlineKeyboardButton("🔄 فحص يدوي", callback_data="manual_check"), InlineKeyboardButton("🔄 تحديث", callback_data="refresh")],
-        [InlineKeyboardButton("✏️ تعديل الكلمات المفتاحية", callback_data="edit_keywords")]
+        [InlineKeyboardButton("✏️ تعديل الكلمات المفتاحية", callback_data="edit_keywords")],
+        [InlineKeyboardButton("🏦 تعديل المصرف الافتراضي", callback_data="edit_bank")]
     ]
     return status_text, InlineKeyboardMarkup(keyboard)
 
@@ -512,7 +523,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V10 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V11 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -575,6 +586,21 @@ async def handle_callback(update):
         current_kw = ", ".join(config["مصادر"][source_name]["keywords"])
         await bot.send_message(chat_id=ADMIN_ID, text=f"✏️ الكلمات الحالية لـ {source_name}:\n{current_kw}\n\nارسل الكلمات الجديدة مفصولة بفاصلة,")
         return
+    elif data == "edit_bank":
+        keyboard = []
+        for name in SALARY_SOURCES.keys():
+            if SALARY_SOURCES[name].get("PRIORITY", 1) == 1:
+                current_bank = SALARY_SOURCES[name].get("BANK_DEFAULT", "غير محدد")
+                keyboard.append([InlineKeyboardButton(f"{name} - {current_bank}", callback_data=f"editbank_{name}")])
+        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="refresh")])
+        await query.edit_message_text("🏦 اختر الوزارة لتعديل المصرف الافتراضي:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+    elif data.startswith("editbank_"):
+        source_name = data.replace("editbank_", "")
+        config["waiting_bank"] = source_name
+        save_config(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=f"🏦 ارسل اسم المصرف الافتراضي لـ {source_name}:\nمثال: مصرف الرافدين")
+        return
     elif data == "refresh":
         pass
 
@@ -588,7 +614,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V10 Pro استخراج مصرف محسن")
+    logger.info("✅ البوت شغال - V11 Pro مصرف افتراضي")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
