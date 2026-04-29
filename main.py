@@ -8,8 +8,8 @@ from telegram.error import TelegramError
 
 # ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-CHANNEL_USERNAME = "@w_3_vv" # يوزر قناتك
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0")) # لازم رقم مثل -1001234567890
+CHANNEL_USERNAME = "@w_3_vv" # يوزر قناتك للزر بس
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # معلومات المطور
@@ -62,13 +62,15 @@ SALARY_SOURCES = {
 # ========== كلمات النفي للفحص الذكي ==========
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
 
-# ========== فحص الاشتراك الاجباري ==========
+# ========== فحص الاشتراك الاجباري - محدث ==========
 async def is_subscribed(user_id):
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-    except:
-        return False
+    except TelegramError as e:
+        print(f"خطأ فحص الاشتراك: {e}")
+        # اذا البوت مو ادمن يرجع True علمود ما يحظر الكل
+        return True
 
 # ========== دوال التكوين ==========
 def load_config():
@@ -284,9 +286,10 @@ async def handle_message(update):
         config["users"].append(user_id)
         save_config(config)
 
-    # امر /start مع اشتراك اجباري
+    # امر /start مع اشتراك اجباري محدث
     if update.message.text == "/start":
-        if not await is_subscribed(user_id):
+        subscribed = await is_subscribed(user_id)
+        if not subscribed:
             keyboard = [
                 [InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
                 [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_sub")]
@@ -349,9 +352,10 @@ async def handle_callback(update):
     user_id = query.from_user.id
     await query.answer()
 
-    # زر التحقق من الاشتراك
+    # زر التحقق من الاشتراك - محدث
     if data == "check_sub":
-        if await is_subscribed(user_id):
+        subscribed = await is_subscribed(user_id)
+        if subscribed:
             keyboard = [
                 [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
                 [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
@@ -361,12 +365,13 @@ async def handle_callback(update):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
-            await query.answer("❌ انت بعدك ما مشترك", show_alert=True)
+            await query.answer("❌ انت بعدك ما مشترك بالقناة", show_alert=True)
         return
 
     # فحص الاشتراك قبل كل زر
     if data in ["dev_info_user", "sarf_user"]:
-        if not await is_subscribed(user_id):
+        subscribed = await is_subscribed(user_id)
+        if not subscribed:
             await query.answer("⚠️ اشترك بالقناة اولاً", show_alert=True)
             return
 
@@ -374,7 +379,6 @@ async def handle_callback(update):
     if data == "dev_info_user":
         caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: {CHANNEL_USERNAME}\n💬 للتواصل: {DEV_USERNAME}"
         try:
-            # ياخذ صورتك من بروفايلك مباشرة
             photos = await bot.get_user_profile_photos(user_id=ADMIN_ID, limit=1)
             if photos.total_count > 0:
                 photo = photos.photos[0][-1].file_id
