@@ -221,7 +221,6 @@ async def handle_callback(update):
         if name in config["مصادر"]:
             config["مصادر"][name]["enabled"] = not config["مصادر"][name].get("enabled", True)
             await query.answer(f"{name}: {'تفعل' if config['مصادر'][name]['enabled'] else 'توقف'}")
-            # اعادة عرض قائمة المصادر
             keyboard = []
             for n, s in config["مصادر"].items():
                 status = "✅" if s.get("enabled", True) else "❌"
@@ -237,7 +236,6 @@ async def handle_callback(update):
 
     save_config(config)
 
-    # اعادة عرض اللوحة
     enabled_count = sum(1 for s in config["مصادر"].values() if s.get("enabled", True))
     keyboard = [
         [InlineKeyboardButton("🔄 تشغيل المراقبة" if not config["is_running"] else "⏸️ إيقاف المراقبة", callback_data="toggle_run")],
@@ -251,7 +249,8 @@ async def handle_callback(update):
 
 # ========== التشغيل الرئيسي ==========
 async def main():
-    # السطر الوحيد اللي ضفته يحل مشكلة التعليق
+    # هذا السطر يحل مشكلة Conflict: terminated by other getUpdates
+    # يحذف اي Webhook معلق ويقتل اي نسخة قديمة
     await bot.delete_webhook(drop_pending_updates=True)
 
     offset = 0
