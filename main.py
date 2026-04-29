@@ -3,18 +3,18 @@ import asyncio, json, os, re
 from datetime import datetime
 import httpx
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError
 
 # ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_USERNAME = "@w_3_vv" # يوزر قناتك
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# معلومات المطور - غيرها
+# معلومات المطور
 DEV_NAME = "مطور البوت @w3vv"
 DEV_USERNAME = "@w_3_vv"
-DEV_PHOTO = "https://i.imgur.com/placeholder.jpg" # حط رابط صورتك هنا
 
 CHECK_INTERVAL = 600
 DOLLAR_INTERVAL = 3600
@@ -23,44 +23,52 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# ========== مصادر الرواتب ==========
+# ========== مصادر الرواتب المحدثة - صفحات الاخبار ==========
 SALARY_SOURCES = {
     "الرعاية الاجتماعية والمتقاعدين": {
-        "URL": "https://molsa.gov.iq/",
+        "URL": "https://molsa.gov.iq/ar/news",
         "KEYWORDS": ["نحن", "نا", "رواتب", "الرواتب", "دفعة", "اطلاق", "صرف", "مستحقات", "الوجبة", "ملحق"]
     },
     "البيان الرسمي لوزارة المالية": {
-        "URL": "https://www.mof.gov.iq/",
+        "URL": "https://www.mof.gov.iq/Pages/MOFBannerHeadlineDetail.aspx",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية", "الموازنة", "حسابات", "استحقاق"]
     },
     "وزارة التربية": {
-        "URL": "https://moedu.gov.iq/",
+        "URL": "https://moedu.gov.iq/index.php/category/اخبار-الوزارة/",
         "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين", "المدرسين", "الكوادر", "محاضرين"]
     },
     "وزارة الصحة": {
-        "URL": "https://moh.gov.iq/",
+        "URL": "https://moh.gov.iq/?page=12",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
     },
     "وزارة الدفاع": {
-        "URL": "https://mod.mil.iq/",
+        "URL": "https://mod.mil.iq/index.php?name=News",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
     },
     "وزارة الداخلية": {
-        "URL": "https://moi.gov.iq/",
+        "URL": "https://moi.gov.iq/index.php/news",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"]
     },
     "وزارة التعليم العالي": {
-        "URL": "https://mohesr.gov.iq/",
+        "URL": "https://mohesr.gov.iq/ar/news",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "التعليم", "الجامعات", "التدريسيين"]
     },
     "وزارة الكهرباء": {
-        "URL": "https://moelc.gov.iq/",
+        "URL": "https://moelc.gov.iq/category/اخبار-الوزارة",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الكهرباء", "منتسبي"]
     }
 }
 
 # ========== كلمات النفي للفحص الذكي ==========
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
+
+# ========== فحص الاشتراك الاجباري ==========
+async def is_subscribed(user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+    except:
+        return False
 
 # ========== دوال التكوين ==========
 def load_config():
@@ -120,21 +128,7 @@ async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
         return f"⚪ {name}: معطل"
 
-    urls_to_try = [
-        source["URL"],
-        source["URL"] + "news",
-        source["URL"] + "ar",
-        source["URL"] + "ar/news",
-        source["URL"] + "ar/node",
-        source["URL"] + "latest"
-    ]
-
-    status, text = 0, ""
-    for url in urls_to_try:
-        status, text = await fetch_url(url)
-        if status == 200:
-            break
-        await asyncio.sleep(0.5)
+    status, text = await fetch_url(source["URL"])
 
     if status!= 200:
         if status == 403:
@@ -290,8 +284,20 @@ async def handle_message(update):
         config["users"].append(user_id)
         save_config(config)
 
-    # امر /start للكل مع زرين
+    # امر /start مع اشتراك اجباري
     if update.message.text == "/start":
+        if not await is_subscribed(user_id):
+            keyboard = [
+                [InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
+                [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_sub")]
+            ]
+            await bot.send_message(
+                chat_id=update.message.chat.id,
+                text=f"⚠️ يجب الاشتراك في القناة اولاً\n\n📢 {CHANNEL_USERNAME}\n\nبعد الاشتراك اضغط 'تحققت من الاشتراك'",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
         keyboard = [
             [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
             [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
@@ -304,6 +310,9 @@ async def handle_message(update):
         return
 
     if update.message.text == "/sarf":
+        if not await is_subscribed(user_id):
+            await bot.send_message(chat_id=update.message.chat.id, text=f"⚠️ اشترك اولاً: {CHANNEL_USERNAME}")
+            return
         await bot.send_message(chat_id=update.message.chat.id, text=get_dollar_message())
         return
 
@@ -337,22 +346,50 @@ async def handle_message(update):
 async def handle_callback(update):
     query = update.callback_query
     data = query.data
+    user_id = query.from_user.id
     await query.answer()
 
-    # ازرار عامة للكل
+    # زر التحقق من الاشتراك
+    if data == "check_sub":
+        if await is_subscribed(user_id):
+            keyboard = [
+                [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
+                [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
+            ]
+            await query.edit_message_text(
+                text="✅ تم التحقق من اشتراكك\n👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.answer("❌ انت بعدك ما مشترك", show_alert=True)
+        return
+
+    # فحص الاشتراك قبل كل زر
+    if data in ["dev_info_user", "sarf_user"]:
+        if not await is_subscribed(user_id):
+            await query.answer("⚠️ اشترك بالقناة اولاً", show_alert=True)
+            return
+
+    # ازرار عامة للكل - صورة المطور تلقائي من البروفايل
     if data == "dev_info_user":
-        caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: @w_3_vv\n💬 للتواصل: {DEV_USERNAME}"
+        caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: {CHANNEL_USERNAME}\n💬 للتواصل: {DEV_USERNAME}"
         try:
-            await bot.send_photo(chat_id=query.from_user.id, photo=DEV_PHOTO, caption=caption)
+            # ياخذ صورتك من بروفايلك مباشرة
+            photos = await bot.get_user_profile_photos(user_id=ADMIN_ID, limit=1)
+            if photos.total_count > 0:
+                photo = photos.photos[0][-1].file_id
+                await bot.send_photo(chat_id=user_id, photo=photo, caption=caption)
+            else:
+                await bot.send_message(chat_id=user_id, text=caption)
         except:
-            await bot.send_message(chat_id=query.from_user.id, text=caption)
+            await bot.send_message(chat_id=user_id, text=caption)
         return
     elif data == "sarf_user":
-        await bot.send_message(chat_id=query.from_user.id, text=get_dollar_message())
+        await bot.send_message(chat_id=user_id, text=get_dollar_message())
         return
 
     # ازرار الادمن فقط
-    if query.from_user.id!= ADMIN_ID:
+    if user_id!= ADMIN_ID:
         await query.answer("غير مصرح لك")
         return
 
