@@ -54,6 +54,9 @@ SALARY_SOURCES = {
     }
 }
 
+# ========== كلمات النفي للفحص الذكي ==========
+NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
+
 # ========== دوال التكوين ==========
 def load_config():
     try:
@@ -62,6 +65,7 @@ def load_config():
             if data.get("آخر عملية بيع", 0) == 0: data["آخر عملية بيع"] = 1550
             if data.get("آخر عملية شراء", 0) == 0: data["آخر عملية شراء"] = 1310
             if "مصادر" not in data: data["مصادر"] = {}
+            if "users" not in data: data["users"] = []
             for name in SALARY_SOURCES:
                 if name not in data["مصادر"]:
                     data["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
@@ -71,7 +75,8 @@ def load_config():
             "آخر_الأخبار": [], "is_running": True, "الوضع الصامت": False,
             "dollar_enabled": True, "آخر عملية شراء": 1310, "آخر عملية بيع": 1550,
             "آخر_تاريخ_للشراء": "", "آخر_تاريخ_للبيع": "", "dollar_msg_id": None,
-            "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}
+            "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}, "users": [],
+            "waiting_broadcast": False, "waiting_keywords": None
         }
         for name in SALARY_SOURCES:
             config["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
@@ -81,60 +86,80 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
+# ========== الفحص الذكي ==========
+def is_real_news(text, keyword):
+    """يفحص اذا الخبر حقيقي مو نفي او اشاعة"""
+    keyword_pos = text.find(keyword)
+    if keyword_pos == -1: return False
+    context = text[max(0, keyword_pos-100):keyword_pos+100]
+    for neg in NEGATIVE_CONTEXT:
+        if neg in context:
+            return False
+    return True
+
 # ========== دوال الفحص ==========
 async def fetch_url(url):
     try:
-        r = await client.get(url, follow_redirects=True)
+        r = await client.get(url, follow_redirects=True, timeout=15.0)
         return r.status_code, r.text
-    except:
-        return 0, ""
+    except Exception as e:
+        return 0, str(e)
 
-async def check_single_source(name, source, config):
+async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
-        return
+        return f"⚪ {name}: معطل"
 
     status, text = await fetch_url(source["URL"])
     if status!= 200:
-        return
+        return f"🔴 {name}: خطأ {status}"
 
     keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
     found_keyword = None
+
     for keyword in keywords:
-        if keyword in text:
+        if keyword in text and is_real_news(text, keyword):
             found_keyword = keyword
             break
 
     if found_keyword:
         news_id = f"{name}_{hash(text[:500])}"
         if news_id not in config["آخر_الأخبار"]:
-            msg = f"🔴 عاجل | {name}\n\nتم رصد كلمة '{found_keyword}' في الموقع.\n\nالمصدر: {source['URL']}"
+            if not silent:
+                msg = f"🔴 عاجل | {name}\n\nتم رصد خبر صرف الرواتب.\n\nالمصدر: {source['URL']}"
+                if config["الوضع الصامت"]:
+                    try:
+                        await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True, disable_notification=True)
+                    except: pass
+                else:
+                    try:
+                        sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
+                        config["last_salary_msg_id"] = sent.message_id
+                    except: pass
 
-            if config["الوضع الصامت"]:
-                try:
-                    await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True, disable_notification=True)
-                except: pass
-            else:
-                try:
-                    sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
-                    config["last_salary_msg_id"] = sent.message_id
-                except: pass
+                config["آخر_الأخبار"].append(news_id)
+                if len(config["آخر_الأخبار"]) > 50:
+                    config["آخر_الأخبار"] = config["آخر_الأخبار"][-50:]
+                save_config(config)
+            return f"🟢 {name}: تم العثور على '{found_keyword}'"
+        else:
+            return f"🟡 {name}: خبر مكرر"
+    return f"🔵 {name}: لا يوجد جديد"
 
-            config["آخر_الأخبار"].append(news_id)
-            if len(config["آخر_الأخبار"]) > 50:
-                config["آخر_الأخبار"] = config["آخر_الأخبار"][-50:]
-            save_config(config)
-
-async def check_salaries():
+async def check_salaries(silent=True):
     config = load_config()
-    if not config["is_running"]: return
+    if not config["is_running"] and silent: return []
 
-    tasks = [check_single_source(name, source, config) for name, source in SALARY_SOURCES.items()]
-    await asyncio.gather(*tasks)
+    results = []
+    for name, source in SALARY_SOURCES.items():
+        result = await check_single_source(name, source, config, silent)
+        results.append(result)
+        await asyncio.sleep(0.5)
+    return results
 
 # ========== فحص الدولار ==========
 async def check_dollar():
     config = load_config()
-    if not config["is_running"] or not config["dollar_enabled"]: return
+    if not config["is_running"] or not config["dollar_enabled"]: return False
 
     try:
         r = await client.get("https://api.albarakaexchange.com.iq/api/v1/rates", follow_redirects=True)
@@ -145,7 +170,7 @@ async def check_dollar():
 
             if buy!= config["آخر عملية شراء"] or sell!= config["آخر عملية بيع"]:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                msg = f"💵 تحديث أسعار الدولار\n\n🔻 الشراء: {buy} د.ع\n🔺 البيع: {sell} د.ع\n\n⏰ آخر تحديث: {now}"
+                msg = f"💵 تحديث أسعار الدولار\n\n🔻 الشراء: {buy:,} د.ع\n🔺 البيع: {sell:,} د.ع\n\n⏰ آخر تحديث: {now}"
 
                 try:
                     if config["dollar_msg_id"]:
@@ -164,28 +189,102 @@ async def check_dollar():
                 config["آخر_تاريخ_للشراء"] = now
                 config["آخر_تاريخ_للبيع"] = now
                 save_config(config)
+                return True
     except: pass
+    return False
 
 # ========== لوحة التحكم ==========
-async def handle_update(update):
-    if not update.message: return
-    if update.message.from_user.id!= ADMIN_ID: return
-    if update.message.text!= "/admin": return
-
-    config = load_config()
+def get_admin_panel(config):
     enabled_count = sum(1 for s in config["مصادر"].values() if s.get("enabled", True))
+    status_run = "شغال" if config['is_running'] else "متوقف"
+    status_silent = "مفعل" if config['الوضع الصامت'] else "معطل"
+    status_dollar = "مفعل" if config['dollar_enabled'] else "معطل"
+    pin_status = "مثبت" if config['dollar_msg_id'] else "غير مثبت"
+
+    status_text = f"⚙️ لوحة تحكم @w3vv\n\n📊 الحالة: {status_run} | الصامت: {status_silent} 🔔\n💵 الدولار: {status_dollar} | {pin_status} ❌\n🏦 شراء: {config['آخر عملية شراء']:,} | بيع: {config['آخر عملية بيع']:,}\n📡 مصادر الرواتب: {enabled_count} مفعلة"
 
     keyboard = [
-        [InlineKeyboardButton("🔄 تشغيل المراقبة" if not config["is_running"] else "⏸️ إيقاف المراقبة", callback_data="toggle_run")],
-        [InlineKeyboardButton("🔕 تفعيل الوضع الصامت" if not config["الوضع الصامت"] else "🔔 إلغاء الوضع الصامت", callback_data="toggle_silent")],
-        [InlineKeyboardButton("💵 تفعيل الدولار" if not config["dollar_enabled"] else "💵 ايقاف الدولار", callback_data="toggle_dollar")],
-        [InlineKeyboardButton("📡 ادارة المصادر", callback_data="manage_sources")],
-        [InlineKeyboardButton("🗑️ مسح سجل الأخبار", callback_data="clear_news")]
+        [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
+        [InlineKeyboardButton("💵 اسعار الدولار", callback_data="dollar_prices")],
+        [InlineKeyboardButton("📰 جلب الاخبار", callback_data="fetch_news")],
+        [InlineKeyboardButton("🗑️ حذف آخر منشور", callback_data="delete_last")],
+        [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="backup")],
+        [InlineKeyboardButton("📢 اذاعة", callback_data="broadcast"), InlineKeyboardButton("⏯️ تشغيل/ايقاف", callback_data="toggle_run")],
+        [InlineKeyboardButton("🔕 صامت", callback_data="toggle_silent"), InlineKeyboardButton("💵 دولار تلقائي", callback_data="toggle_dollar")],
+        [InlineKeyboardButton("📌 الغاء تثبيت الدولار", callback_data="unpin_dollar")],
+        [InlineKeyboardButton("🔄 فحص يدوي", callback_data="manual_check"), InlineKeyboardButton("🔄 تحديث", callback_data="refresh")],
+        [InlineKeyboardButton("✏️ تعديل الكلمات المفتاحية", callback_data="edit_keywords")]
     ]
+    return status_text, InlineKeyboardMarkup(keyboard)
 
-    status_text = f"⚙️ لوحة تحكم @w_3_vv V2\n\n📊 حالة المراقبة: {'🟢 تعمل' if config['is_running'] else '🔴 متوقفة'}\n💵 مراقبة الدولار: {'✅ مفعلة' if config['dollar_enabled'] else '❌ متوقفة'}\n🔕 الوضع الصامت: {'✅ مفعل' if config['الوضع الصامت'] else '❌ متوقف'}\n\n📡 المصادر المفعلة: {enabled_count}/{len(SALARY_SOURCES)}\n\n💰 آخر سعر دولار:\n🔻 شراء: {config['آخر عملية شراء']} - {config.get('آخر_تاريخ_للشراء', 'لا يوجد')}\n🔺 بيع: {config['آخر عملية بيع']} - {config.get('آخر_تاريخ_للبيع', 'لا يوجد')}"
+async def handle_message(update):
+    if not update.message: return
+    config = load_config()
 
-    await bot.send_message(chat_id=ADMIN_ID, text=status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    user_id = update.message.from_user.id
+    if user_id not in config["users"]:
+        config["users"].append(user_id)
+        save_config(config)
+
+    # امر /start للكل
+    if update.message.text == "/start":
+        await bot.send_message(
+            chat_id=update.message.chat.id,
+            text="👋 اهلاً بك\n\nلمعرفة سعر الصرف ارسل /sarf\n\n📢 تابع قناتنا: @w_3_vv"
+        )
+        return
+
+    # امر /sarf للكل - يعرض سعر الدولار بالكليشة الجديدة
+    if update.message.text == "/sarf":
+        config = load_config()
+        buy = config['آخر عملية شراء']
+        sell = config['آخر عملية بيع']
+        now = datetime.now().strftime("%Y/%m/%d - %H:%M")
+
+        msg = f"""💵 اسعار صرف الدولار الحالية 💵
+
+البنك المركزي - الشراء 🏦
+الدولار: {buy:,} دينار 🔸
+الورقة: {buy * 100:,} دينار 🔸
+
+السوق - البيع 🏦
+الدولار: {sell:,} دينار 🔸
+الورقة: {sell * 100:,} دينار 🔸
+
+الآن: {now} 🕒
+تابع قناتنا @w3vv لكل جديد"""
+
+        await bot.send_message(chat_id=update.message.chat.id, text=msg)
+        return
+
+    # معالجة تعديل الكلمات المفتاحية
+    if update.message.from_user.id == ADMIN_ID and config.get("waiting_keywords"):
+        source_name = config["waiting_keywords"]
+        config["waiting_keywords"] = None
+        new_keywords = [k.strip() for k in update.message.text.split(",")]
+        config["مصادر"][source_name]["keywords"] = new_keywords
+        save_config(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=f"✅ تم تحديث كلمات {source_name}:\n{', '.join(new_keywords)}")
+        return
+
+    # معالجة الاذاعة
+    if update.message.from_user.id == ADMIN_ID and config.get("waiting_broadcast"):
+        config["waiting_broadcast"] = False
+        save_config(config)
+        count = 0
+        for uid in config.get("users", []):
+            try:
+                await bot.send_message(chat_id=uid, text=update.message.text)
+                count += 1
+                await asyncio.sleep(0.05)
+            except: pass
+        await bot.send_message(chat_id=ADMIN_ID, text=f"✅ تم الارسال لـ {count} مستخدم")
+        return
+
+    if update.message.from_user.id!= ADMIN_ID: return
+    if update.message.text == "/admin":
+        status_text, keyboard = get_admin_panel(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=status_text, reply_markup=keyboard)
 
 async def handle_callback(update):
     query = update.callback_query
@@ -195,81 +294,111 @@ async def handle_callback(update):
 
     config = load_config()
     data = query.data
+    await query.answer()
 
     if data == "toggle_run":
         config["is_running"] = not config["is_running"]
-        await query.answer(f"المراقبة {'اشتغلت' if config['is_running'] else 'توقفت'} ✅")
+        save_config(config)
     elif data == "toggle_silent":
         config["الوضع الصامت"] = not config["الوضع الصامت"]
-        await query.answer(f"الوضع الصامت {'تفعل' if config['الوضع الصامت'] else 'توقف'} ✅")
+        save_config(config)
     elif data == "toggle_dollar":
         config["dollar_enabled"] = not config["dollar_enabled"]
-        await query.answer(f"مراقبة الدولار {'اشتغلت' if config['dollar_enabled'] else 'توقفت'} ✅")
-    elif data == "clear_news":
-        config["آخر_الأخبار"] = []
-        await query.answer("تم مسح السجل ✅")
-    elif data == "manage_sources":
+        save_config(config)
+    elif data == "dev_info":
+        await bot.send_message(chat_id=ADMIN_ID, text="👨‍💻 مطور البوت: @w_3_vv\n⚙️ اصدار: V2 Pro")
+        return
+    elif data == "dollar_prices":
+        buy = config['آخر عملية شراء']
+        sell = config['آخر عملية بيع']
+        await bot.send_message(chat_id=ADMIN_ID, text=f"💵 اسعار الدولار الحالية:\n\n🔻 شراء: {buy:,} د.ع\n🔺 بيع: {sell:,} د.ع\n\n⏰ {config.get('آخر_تاريخ_للبيع', 'لا يوجد')}")
+        return
+    elif data == "fetch_news":
+        msg = await bot.send_message(chat_id=ADMIN_ID, text="⏳ جاري جلب الاخبار...")
+        await check_salaries(silent=False)
+        await bot.edit_message_text(chat_id=ADMIN_ID, message_id=msg.message_id, text="✅ تم الجلب والنشر للقناة")
+        return
+    elif data == "delete_last":
+        if config.get("last_salary_msg_id"):
+            try:
+                await bot.delete_message(chat_id=CHANNEL_ID, message_id=config["last_salary_msg_id"])
+                await bot.send_message(chat_id=ADMIN_ID, text="✅ تم حذف آخر منشور")
+                config["last_salary_msg_id"] = None
+                save_config(config)
+            except:
+                await bot.send_message(chat_id=ADMIN_ID, text="❌ فشل الحذف")
+        else:
+            await bot.send_message(chat_id=ADMIN_ID, text="❌ لا يوجد منشور محفوظ")
+        return
+    elif data == "backup":
+        with open(CONFIG_FILE, 'rb') as f:
+            await bot.send_document(chat_id=ADMIN_ID, document=f, filename='backup.json', caption='💾 نسخة احتياطية')
+        return
+    elif data == "broadcast":
+        config["waiting_broadcast"] = True
+        save_config(config)
+        await bot.send_message(chat_id=ADMIN_ID, text="📢 ارسل الرسالة اللي تريد اذاعتها:")
+        return
+    elif data == "unpin_dollar":
+        if config.get("dollar_msg_id"):
+            try:
+                await bot.unpin_chat_message(chat_id=CHANNEL_ID, message_id=config["dollar_msg_id"])
+                config["dollar_msg_id"] = None
+                save_config(config)
+                await bot.send_message(chat_id=ADMIN_ID, text="✅ تم الغاء التثبيت")
+            except:
+                await bot.send_message(chat_id=ADMIN_ID, text="❌ فشل")
+        return
+    elif data == "manual_check":
+        msg = await bot.send_message(chat_id=ADMIN_ID, text="⏳ جاري الفحص اليدوي لجميع المصادر...")
+        results = await check_salaries(silent=True)
+        result_text = "🔄 نتائج الفحص اليدوي:\n\n" + "\n".join(results)
+        await bot.edit_message_text(chat_id=ADMIN_ID, message_id=msg.message_id, text=result_text)
+        return
+    elif data == "edit_keywords":
         keyboard = []
-        for name, source in config["مصادر"].items():
-            status = "✅" if source.get("enabled", True) else "❌"
-            keyboard.append([InlineKeyboardButton(f"{status} {name}", callback_data=f"toggle_source_{name}")])
-        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
-        await query.edit_message_text("📡 ادارة مصادر الرواتب:\nاضغط للتفعيل/التعطيل", reply_markup=InlineKeyboardMarkup(keyboard))
+        for name in SALARY_SOURCES.keys():
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"editkw_{name}")])
+        keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="refresh")])
+        await query.edit_message_text("✏️ اختر الوزارة لتعديل كلماتها:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
-    elif data.startswith("toggle_source_"):
-        name = data.replace("toggle_source_", "")
-        if name in config["مصادر"]:
-            config["مصادر"][name]["enabled"] = not config["مصادر"][name].get("enabled", True)
-            await query.answer(f"{name}: {'تفعل' if config['مصادر'][name]['enabled'] else 'توقف'}")
-            keyboard = []
-            for n, s in config["مصادر"].items():
-                status = "✅" if s.get("enabled", True) else "❌"
-                keyboard.append([InlineKeyboardButton(f"{status} {n}", callback_data=f"toggle_source_{n}")])
-            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
-            save_config(config)
-            return
-    elif data == "back_main":
-        await query.message.delete()
-        await handle_update(query)
+    elif data.startswith("editkw_"):
+        source_name = data.replace("editkw_", "")
+        config["waiting_keywords"] = source_name
+        save_config(config)
+        current_kw = ", ".join(config["مصادر"][source_name]["keywords"])
+        await bot.send_message(chat_id=ADMIN_ID, text=f"✏️ الكلمات الحالية لـ {source_name}:\n{current_kw}\n\nارسل الكلمات الجديدة مفصولة بفاصلة,")
         return
+    elif data == "refresh":
+        pass
 
-    save_config(config)
-
-    enabled_count = sum(1 for s in config["مصادر"].values() if s.get("enabled", True))
-    keyboard = [
-        [InlineKeyboardButton("🔄 تشغيل المراقبة" if not config["is_running"] else "⏸️ إيقاف المراقبة", callback_data="toggle_run")],
-        [InlineKeyboardButton("🔕 تفعيل الوضع الصامت" if not config["الوضع الصامت"] else "🔔 إلغاء الوضع الصامت", callback_data="toggle_silent")],
-        [InlineKeyboardButton("💵 تفعيل الدولار" if not config["dollar_enabled"] else "💵 ايقاف الدولار", callback_data="toggle_dollar")],
-        [InlineKeyboardButton("📡 ادارة المصادر", callback_data="manage_sources")],
-        [InlineKeyboardButton("🗑️ مسح سجل الأخبار", callback_data="clear_news")]
-    ]
-    status_text = f"⚙️ لوحة تحكم @w_3_vv V2\n\n📊 حالة المراقبة: {'🟢 تعمل' if config['is_running'] else '🔴 متوقفة'}\n💵 مراقبة الدولار: {'✅ مفعلة' if config['dollar_enabled'] else '❌ متوقفة'}\n🔕 الوضع الصامت: {'✅ مفعل' if config['الوضع الصامت'] else '❌ متوقف'}\n\n📡 المصادر المفعلة: {enabled_count}/{len(SALARY_SOURCES)}\n\n💰 آخر سعر دولار:\n🔻 شراء: {config['آخر عملية شراء']} - {config.get('آخر_تاريخ_للشراء', 'لا يوجد')}\n🔺 بيع: {config['آخر عملية بيع']} - {config.get('آخر_تاريخ_للبيع', 'لا يوجد')}"
-    await query.edit_message_text(text=status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    status_text, keyboard = get_admin_panel(config)
+    try:
+        await query.edit_message_text(text=status_text, reply_markup=keyboard)
+    except: pass
 
 # ========== التشغيل الرئيسي ==========
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
 
-    print("✅ البوت شغال - V2 مصلح")
+    print("✅ البوت شغال - V2 Pro")
 
     while True:
         try:
             updates = await bot.get_updates(offset=offset, timeout=30)
             for update in updates:
                 offset = update.update_id + 1
-                if update.message:
-                    await handle_update(update)
-                elif update.callback_query:
+                if update.callback_query:
                     await handle_callback(update)
+                elif update.message:
+                    await handle_message(update)
 
             now = asyncio.get_event_loop().time()
             if now - last_salary_check >= CHECK_INTERVAL:
-                await check_salaries()
+                await check_salaries(silent=False)
                 last_salary_check = now
 
             if now - last_dollar_check >= DOLLAR_INTERVAL:
@@ -281,7 +410,6 @@ async def main():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    # ========== حل مشكلة بورت Render ==========
     import threading, os
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -298,6 +426,4 @@ if __name__ == "__main__":
         HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
 
     threading.Thread(target=start_fake_server, daemon=True).start()
-    # ========== نهاية الحل ==========
-
     asyncio.run(main())
