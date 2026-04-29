@@ -28,37 +28,43 @@ SALARY_SOURCES = {
     "وزارة المالية": {
         "TELEGRAM": "Mof_Iraq",
         "DISPLAY": "وزارة المالية",
-        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية"]
+        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية"],
+        "PRIORITY": 1
     },
     "وزارة الداخلية": {
         "TELEGRAM": "MOI_Iraq",
         "DISPLAY": "وزارة الداخلية",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"]
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"],
+        "PRIORITY": 1
     },
     "وزارة الدفاع": {
         "TELEGRAM": "MODiraq",
         "DISPLAY": "وزارة الدفاع",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"],
+        "PRIORITY": 1
     },
     "وزارة الصحة": {
         "TELEGRAM": "mohiraq",
         "DISPLAY": "وزارة الصحة",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"],
+        "PRIORITY": 1
     },
     "وزارة التربية": {
         "TELEGRAM": "moedu_iq",
         "DISPLAY": "وزارة التربية",
-        "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين"]
+        "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين"],
+        "PRIORITY": 1
     },
     "وكالة الانباء العراقية": {
         "URL": "https://ina.iq/",
         "DISPLAY": "الوزارات العراقية",
-        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "صرف", "المالية", "الوزارات"]
+        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "صرف", "المالية", "الوزارات"],
+        "PRIORITY": 2 # اولوية اقل - خبر عام
     }
 }
 
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
-BANKS = ["الرافدين", "الرشيد", "الاهلي", "TBI", "الصناعي", "الزراعي"]
+BANKS = ["الرافدين", "الرشيد", "الاهلي", "TBI", "الصناعي", "الزراعي", "مصرف الرافدين", "مصرف الرشيد"]
 
 async def is_subscribed(user_id):
     if user_id == ADMIN_ID:
@@ -109,9 +115,15 @@ def is_real_news(text, keyword):
     return True
 
 def extract_bank(text):
-    for bank in BANKS:
-        if bank in text:
-            return f"مصرف {bank}"
+    text = text.lower()
+    if "رافدين" in text or "rafidain" in text:
+        return "مصرف الرافدين"
+    if "رشيد" in text or "rasheed" in text:
+        return "مصرف الرشيد"
+    if "الاهلي" in text or "اهلي" in text:
+        return "المصرف الاهلي"
+    if "tbi" in text:
+        return "مصرف TBI"
     return ""
 
 async def fetch_url(url):
@@ -144,7 +156,7 @@ async def check_telegram_channel(channel_username, keywords, display_name):
             for keyword in keywords:
                 if keyword in text and is_real_news(text, keyword):
                     bank = extract_bank(text)
-                    return True, text[:200], bank
+                    return True, text[:300], bank
         return False, "", ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
@@ -156,6 +168,7 @@ async def check_single_source(name, source, config, silent=True):
 
     keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
     display_name = source.get("DISPLAY", name)
+    priority = source.get("PRIORITY", 1)
     found = False
     news_text = ""
     bank_name = ""
@@ -181,11 +194,18 @@ async def check_single_source(name, source, config, silent=True):
 
     if found:
         today = datetime.now().strftime("%Y-%m-%d-%H")
+        # نضيف الوزارة + المصرف للهاش علمود ما يكرر
         news_hash = hashlib.md5(f"{name}_{today}_{bank_name}".encode()).hexdigest()
+
+        # منع التكرار الذكي: اذا نشر خبر خاص ما ينشر العام
+        if priority == 2: # خبر عام مثل "الوزارات العراقية"
+            for h in config.get("اخبار_منشورة", []):
+                if today in h and "وزارة" in h: # اذا اكو خبر وزارة خاص اليوم
+                    logger.info(f"تخطي الخبر العام لان اكو خبر خاص منشور")
+                    return f"🟡 {name}: تم تخطيه لان اكو خبر خاص"
 
         if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
-                # نضيف اسم المصرف اذا موجود
                 title = f"🔴 عاجل | رواتب {display_name}"
                 if bank_name:
                     title += f" - {bank_name}"
@@ -220,7 +240,9 @@ async def check_salaries(silent=True):
     config = load_config()
     if not config["is_running"] and silent: return []
     results = []
-    for name, source in SALARY_SOURCES.items():
+    # نفحص المصادر حسب الاولوية - الخاص اولاً بعدين العام
+    sorted_sources = sorted(SALARY_SOURCES.items(), key=lambda x: x[1].get("PRIORITY", 1))
+    for name, source in sorted_sources:
         result = await check_single_source(name, source, config, silent)
         results.append(result)
         await asyncio.sleep(2)
@@ -428,7 +450,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V5 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V6 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -504,7 +526,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V5 Pro مع ذكر المصرف")
+    logger.info("✅ البوت شغال - V6 Pro منع التكرار + ذكر المصرف")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
