@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-import asyncio, json, os, re, logging
+import asyncio, json, os, re, logging, hashlib
 from datetime import datetime
 import httpx
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError
 
-# ========== تفعيل اللوجز ==========
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002350481912"))
 CHANNEL_USERNAME = "@w_3_vv"
@@ -26,56 +24,39 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
+# مصادر جديدة: قنوات تلكرام + وكالة الانباء العراقية
 SALARY_SOURCES = {
-    "الرعاية الاجتماعية والمتقاعدين": {
-        "URL": "https://molsa.gov.iq/ar/news",
-        "KEYWORDS": ["نحن", "نا", "رواتب", "الرواتب", "دفعة", "اطلاق", "صرف", "مستحقات", "الوجبة", "ملحق"]
-    },
-    "البيان الرسمي لوزارة المالية": {
-        "URL": "https://mof.gov.iq/News",
-        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية", "الموازنة", "حسابات", "استحقاق"]
-    },
-    "وزارة التربية": {
-        "URL": "https://moedu.gov.iq/index.php?name=News",
-        "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين", "المدرسين", "الكوادر", "محاضرين"]
-    },
-    "وزارة الصحة": {
-        "URL": "https://moh.gov.iq/index.php?name=News",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
-    },
-    "وزارة الدفاع": {
-        "URL": "https://mod.mil.iq/index.php?name=News",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
+    "وزارة المالية": {
+        "TELEGRAM": "@Mof_Iraq", # قناة المالية الرسمية
+        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية"]
     },
     "وزارة الداخلية": {
-        "URL": "https://moi.gov.iq/index.php?name=News",
+        "TELEGRAM": "@MOI_Iraq",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"]
     },
-    "وزارة التعليم العالي": {
-        "URL": "https://mohesr.gov.iq/ar/node",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "التعليم", "الجامعات", "التدريسيين"]
+    "وزارة الدفاع": {
+        "TELEGRAM": "@MODiraq",
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
     },
-    "وزارة الكهرباء": {
-        "URL": "https://moelc.gov.iq/index.php?name=News",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الكهرباء", "منتسبي"]
+    "وزارة الصحة": {
+        "TELEGRAM": "@mohiraq",
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
+    },
+    "وزارة التربية": {
+        "TELEGRAM": "@moedu_iq",
+        "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين"]
+    },
+    "وكالة الانباء العراقية": {
+        "URL": "https://ina.iq/",
+        "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "صرف", "المالية", "الوزارات"]
     }
 }
 
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
 
-# ========== فحص الاشتراك - مصلح ==========
 async def is_subscribed(user_id):
-    # اذا الادمن نفسه نخليه يمر
-    if user_id == ADMIN_ID:
-        return True
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        logger.info(f"فحص العضو {user_id}: {member.status}")
-        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-    except TelegramError as e:
-        logger.error(f"خطأ فحص الاشتراك للعضو {user_id}: {e}")
-        # اذا صار خطأ نرجع False علمود يطلع زر الاشتراك
-        return False
+    logger.info(f"تخطي فحص الاشتراك للعضو {user_id}")
+    return True
 
 def load_config():
     try:
@@ -85,13 +66,14 @@ def load_config():
             if data.get("آخر عملية شراء", 0) == 0: data["آخر عملية شراء"] = 1310
             if "مصادر" not in data: data["مصادر"] = {}
             if "users" not in data: data["users"] = []
+            if "اخبار_منشورة" not in data: data["اخبار_منشورة"] = []
             for name in SALARY_SOURCES:
                 if name not in data["مصادر"]:
                     data["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
             return data
     except:
         config = {
-            "آخر_الأخبار": [], "is_running": True, "الوضع الصامت": False,
+            "آخر_الأخبار": [], "اخبار_منشورة": [], "is_running": True, "الوضع الصامت": False,
             "dollar_enabled": True, "آخر عملية شراء": 1310, "آخر عملية بيع": 1550,
             "آخر_تاريخ_للشراء": "", "آخر_تاريخ_للبيع": "", "dollar_msg_id": None,
             "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}, "users": [],
@@ -116,62 +98,89 @@ def is_real_news(text, keyword):
 
 async def fetch_url(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
-        'Referer': 'https://www.google.com/',
-        'Connection': 'keep-alive'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3'
     }
     try:
         r = await client.get(url, headers=headers, follow_redirects=True, timeout=20.0)
         return r.status_code, r.text
     except Exception as e:
+        logger.error(f"خطأ جلب {url}: {e}")
         return 0, str(e)
+
+async def check_telegram_channel(channel_username, keywords):
+    try:
+        # نجيب اخر 5 رسائل من القناة
+        updates = await bot.get_updates(offset=-1, limit=100)
+        for update in reversed(updates):
+            if update.channel_post and update.channel_post.chat.username == channel_username.replace("@", ""):
+                text = update.channel_post.text or update.channel_post.caption or ""
+                for keyword in keywords:
+                    if keyword in text and is_real_news(text, keyword):
+                        return True, text[:200]
+        return False, ""
+    except Exception as e:
+        logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
+        return False, ""
 
 async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
         return f"⚪ {name}: معطل"
 
-    status, text = await fetch_url(source["URL"])
+    keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
+    found = False
+    news_text = ""
 
-    if status!= 200:
-        if status == 403:
-            return f"🚫 {name}: محظور 403"
-        elif status == 404:
-            return f"🔴 {name}: خطأ 404"
-        elif status == 0:
-            return f"🔴 {name}: الموقع واقع"
-        else:
+    # اذا عنده قناة تلكرام نفحصها
+    if "TELEGRAM" in source:
+        found, news_text = await check_telegram_channel(source["TELEGRAM"], keywords)
+        if not found:
+            return f"🔵 {name}: لا يوجد جديد بالقناة"
+
+    # اذا عنده رابط موقع نفحصه
+    elif "URL" in source:
+        status, text = await fetch_url(source["URL"])
+        if status!= 200:
             return f"🔴 {name}: خطأ {status}"
 
-    keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
-    found_keyword = None
+        for keyword in keywords:
+            if keyword in text and is_real_news(text, keyword):
+                found = True
+                news_text = text
+                break
+        if not found:
+            return f"🔵 {name}: لا يوجد جديد"
 
-    for keyword in keywords:
-        if keyword in text and is_real_news(text, keyword):
-            found_keyword = keyword
-            break
+    if found:
+        today = datetime.now().strftime("%Y-%m-%d-%H") # نضيف الساعة علمود ما يكرر كل ساعة
+        news_hash = hashlib.md5(f"{name}_{today}".encode()).hexdigest()
 
-    if found_keyword:
-        news_id = f"{name}_{hash(text[:500])}"
-        if news_id not in config["آخر_الأخبار"]:
+        if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
-                msg = f"🔴 عاجل | {name}\n\nتم رصد خبر صرف الرواتب.\n\nالمصدر: {source['URL']}"
-                if config["الوضع الصامت"]:
-                    try:
+                # نخفي المصدر تماماً
+                msg = f"""🔴 عاجل | صرف الرواتب
+
+تم رصد خبر صرف الرواتب من مصادر موثوقة.
+
+تابع الجديد على {CHANNEL_USERNAME}"""
+                try:
+                    if config["الوضع الصامت"]:
                         await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True, disable_notification=True)
-                    except: pass
-                else:
-                    try:
+                    else:
                         sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
                         config["last_salary_msg_id"] = sent.message_id
-                    except: pass
+                    logger.info(f"تم نشر خبر {name}")
+                except Exception as e:
+                    logger.error(f"فشل نشر خبر {name}: {e}")
 
-                config["آخر_الأخبار"].append(news_id)
-                if len(config["آخر_الأخبار"]) > 50:
-                    config["آخر_الأخبار"] = config["آخر_الأخبار"][-50:]
+                if "اخبار_منشورة" not in config:
+                    config["اخبار_منشورة"] = []
+                config["اخبار_منشورة"].append(news_hash)
+                if len(config["اخبار_منشورة"]) > 200:
+                    config["اخبار_منشورة"] = config["اخبار_منشورة"][-200:]
                 save_config(config)
-            return f"🟢 {name}: تم العثور على '{found_keyword}'"
+            return f"🟢 {name}: تم العثور على خبر"
         else:
             return f"🟡 {name}: خبر مكرر"
     return f"🔵 {name}: لا يوجد جديد"
@@ -179,25 +188,22 @@ async def check_single_source(name, source, config, silent=True):
 async def check_salaries(silent=True):
     config = load_config()
     if not config["is_running"] and silent: return []
-
     results = []
     for name, source in SALARY_SOURCES.items():
         result = await check_single_source(name, source, config, silent)
         results.append(result)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
     return results
 
 async def check_dollar():
     config = load_config()
     if not config["is_running"] or not config["dollar_enabled"]: return False
-
     try:
         r = await client.get("https://api.albarakaexchange.com.iq/api/v1/rates", follow_redirects=True)
         if r.status_code == 200:
             data = r.json()
             buy = int(data["data"]["buy"])
             sell = int(data["data"]["sell"])
-
             if buy!= config["آخر عملية شراء"] or sell!= config["آخر عملية بيع"]:
                 now = datetime.now().strftime("%Y/%m/%d - %H:%M")
                 msg = f"""💵 اسعار صرف الدولار الحالية 💵
@@ -212,7 +218,6 @@ async def check_dollar():
 
 الآن: {now} 🕒
 تابع قناتنا @w3vv لكل جديد"""
-
                 try:
                     if config["dollar_msg_id"]:
                         await bot.edit_message_text(chat_id=CHANNEL_ID, message_id=config["dollar_msg_id"], text=msg)
@@ -224,14 +229,14 @@ async def check_dollar():
                         sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg)
                         config["dollar_msg_id"] = sent.message_id
                     except: pass
-
                 config["آخر عملية شراء"] = buy
                 config["آخر عملية بيع"] = sell
                 config["آخر_تاريخ_للشراء"] = now
                 config["آخر_تاريخ_للبيع"] = now
                 save_config(config)
                 return True
-    except: pass
+    except Exception as e:
+        logger.error(f"خطأ الدولار: {e}")
     return False
 
 def get_dollar_message():
@@ -260,7 +265,6 @@ def get_admin_panel(config):
     status_dollar = "مفعل" if config['dollar_enabled'] else "معطل"
     pin_status = "مثبت" if config['dollar_msg_id'] else "غير مثبت"
     status_text = f"⚙️ لوحة تحكم @w3vv\n\n📊 الحالة: {status_run} | الصامت: {status_silent} 🔔\n💵 الدولار: {status_dollar} | {pin_status} ❌\n🏦 شراء: {config['آخر عملية شراء']:,} | بيع: {config['آخر عملية بيع']:,}\n📡 مصادر الرواتب: {enabled_count} مفعلة\n\nCHANNEL_ID: {CHANNEL_ID}"
-
     keyboard = [
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="dollar_prices")],
@@ -278,7 +282,6 @@ def get_admin_panel(config):
 async def handle_message(update):
     if not update.message: return
     config = load_config()
-
     user_id = update.message.from_user.id
     logger.info(f"وصلت رسالة من {user_id}: {update.message.text}")
 
@@ -288,39 +291,27 @@ async def handle_message(update):
 
     if update.message.text == "/start":
         try:
-            subscribed = await is_subscribed(user_id)
-            logger.info(f"نتيجة فحص الاشتراك للعضو {user_id}: {subscribed}")
-
-            if not subscribed:
-                keyboard = [
-                    [InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
-                    [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_sub")]
-                ]
-                await bot.send_message(
-                    chat_id=update.message.chat.id,
-                    text=f"⚠️ يجب الاشتراك في القناة اولاً\n\n📢 {CHANNEL_USERNAME}\n\nبعد الاشتراك اضغط 'تحققت من الاشتراك'",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return
-
+            logger.info(f"تنفيذ /start للعضو {user_id}")
+            # زر لوحة التحكم يطلع بس للادمن
             keyboard = [
                 [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
                 [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
             ]
+            if user_id == ADMIN_ID:
+                keyboard.append([InlineKeyboardButton("⚙️ لوحة التحكم", callback_data="admin_panel")])
+
             await bot.send_message(
                 chat_id=update.message.chat.id,
                 text="👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+            logger.info(f"تم ارسال رد /start للعضو {user_id}")
         except Exception as e:
             logger.error(f"خطأ في /start: {e}")
             await bot.send_message(chat_id=update.message.chat.id, text="❌ صار خطأ، جرب مرة ثانية")
         return
 
     if update.message.text == "/sarf":
-        if not await is_subscribed(user_id):
-            await bot.send_message(chat_id=update.message.chat.id, text=f"⚠️ اشترك اولاً: {CHANNEL_USERNAME}")
-            return
         await bot.send_message(chat_id=update.message.chat.id, text=get_dollar_message())
         return
 
@@ -357,27 +348,6 @@ async def handle_callback(update):
     user_id = query.from_user.id
     await query.answer()
 
-    if data == "check_sub":
-        subscribed = await is_subscribed(user_id)
-        if subscribed:
-            keyboard = [
-                [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
-                [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
-            ]
-            await query.edit_message_text(
-                text="✅ تم التحقق من اشتراكك\n👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await query.answer("❌ انت بعدك ما مشترك بالقناة", show_alert=True)
-        return
-
-    if data in ["dev_info_user", "sarf_user"]:
-        subscribed = await is_subscribed(user_id)
-        if not subscribed:
-            await query.answer("⚠️ اشترك بالقناة اولاً", show_alert=True)
-            return
-
     if data == "dev_info_user":
         caption = f"👨‍💻 {DEV_NAME}\n\n📢 القناة: {CHANNEL_USERNAME}\n💬 للتواصل: {DEV_USERNAME}"
         try:
@@ -392,6 +362,14 @@ async def handle_callback(update):
         return
     elif data == "sarf_user":
         await bot.send_message(chat_id=user_id, text=get_dollar_message())
+        return
+    elif data == "admin_panel":
+        if user_id!= ADMIN_ID:
+            await query.answer("غير مصرح لك")
+            return
+        config = load_config()
+        status_text, keyboard = get_admin_panel(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=status_text, reply_markup=keyboard)
         return
 
     if user_id!= ADMIN_ID:
@@ -410,7 +388,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V2 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V3 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -486,7 +464,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V2 Pro")
+    logger.info("✅ البوت شغال - V3 Pro بدون اشتراك اجباري")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
