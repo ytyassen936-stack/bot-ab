@@ -27,27 +27,33 @@ CONFIG_FILE = 'bot_config.json'
 # مصادر جديدة: قنوات تلكرام + وكالة الانباء العراقية
 SALARY_SOURCES = {
     "وزارة المالية": {
-        "TELEGRAM": "@Mof_Iraq", # قناة المالية الرسمية
+        "TELEGRAM": "Mof_Iraq",
+        "DISPLAY": "وزارة المالية",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "تمويل", "صرف", "المالية"]
     },
     "وزارة الداخلية": {
-        "TELEGRAM": "@MOI_Iraq",
+        "TELEGRAM": "MOI_Iraq",
+        "DISPLAY": "وزارة الداخلية",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الداخلية", "الشرطة", "منتسبي"]
     },
     "وزارة الدفاع": {
-        "TELEGRAM": "@MODiraq",
+        "TELEGRAM": "MODiraq",
+        "DISPLAY": "وزارة الدفاع",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"]
     },
     "وزارة الصحة": {
-        "TELEGRAM": "@mohiraq",
+        "TELEGRAM": "mohiraq",
+        "DISPLAY": "وزارة الصحة",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الصحة", "الكوادر", "منتسبي"]
     },
     "وزارة التربية": {
-        "TELEGRAM": "@moedu_iq",
+        "TELEGRAM": "moedu_iq",
+        "DISPLAY": "وزارة التربية",
         "KEYWORDS": ["رواتب", "الرواتب", "الملاك", "صرف", "التربية", "المعلمين"]
     },
     "وكالة الانباء العراقية": {
         "URL": "https://ina.iq/",
+        "DISPLAY": "الوزارات العراقية",
         "KEYWORDS": ["رواتب", "الرواتب", "اطلاق", "صرف", "المالية", "الوزارات"]
     }
 }
@@ -55,8 +61,15 @@ SALARY_SOURCES = {
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
 
 async def is_subscribed(user_id):
-    logger.info(f"تخطي فحص الاشتراك للعضو {user_id}")
-    return True
+    # فحص الاشتراك الاجباري مع تحمل الاخطاء
+    if user_id == ADMIN_ID:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except Exception as e:
+        logger.error(f"خطأ فحص الاشتراك للعضو {user_id}: {e}")
+        return True # اذا صار خطأ نعتبره مشترك علمود ما نكرش
 
 def load_config():
     try:
@@ -109,16 +122,26 @@ async def fetch_url(url):
         logger.error(f"خطأ جلب {url}: {e}")
         return 0, str(e)
 
-async def check_telegram_channel(channel_username, keywords):
+async def check_telegram_channel(channel_username, keywords, display_name):
     try:
-        # نجيب اخر 5 رسائل من القناة
-        updates = await bot.get_updates(offset=-1, limit=100)
-        for update in reversed(updates):
-            if update.channel_post and update.channel_post.chat.username == channel_username.replace("@", ""):
-                text = update.channel_post.text or update.channel_post.caption or ""
-                for keyword in keywords:
-                    if keyword in text and is_real_news(text, keyword):
-                        return True, text[:200]
+        # نقرأ من t.me/s/ بدون ما نحتاج ادمن
+        url = f"https://t.me/s/{channel_username}"
+        status, html = await fetch_url(url)
+        if status!= 200:
+            logger.error(f"فشل قراءة قناة {channel_username}: {status}")
+            return False, ""
+
+        # نطلع اخر 10 منشورات
+        messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
+        for msg_html in messages[-10:]:
+            # نحول HTML لنص عادي
+            text = re.sub(r'<br/?>', '\n', msg_html)
+            text = re.sub(r'<[^>]+>', '', text)
+            text = text.strip()
+
+            for keyword in keywords:
+                if keyword in text and is_real_news(text, keyword):
+                    return True, text[:200]
         return False, ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
@@ -129,12 +152,13 @@ async def check_single_source(name, source, config, silent=True):
         return f"⚪ {name}: معطل"
 
     keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
+    display_name = source.get("DISPLAY", name)
     found = False
     news_text = ""
 
-    # اذا عنده قناة تلكرام نفحصها
+    # اذا عنده قناة تلكرام نفحصها من الويب
     if "TELEGRAM" in source:
-        found, news_text = await check_telegram_channel(source["TELEGRAM"], keywords)
+        found, news_text = await check_telegram_channel(source["TELEGRAM"], keywords, display_name)
         if not found:
             return f"🔵 {name}: لا يوجد جديد بالقناة"
 
@@ -153,15 +177,15 @@ async def check_single_source(name, source, config, silent=True):
             return f"🔵 {name}: لا يوجد جديد"
 
     if found:
-        today = datetime.now().strftime("%Y-%m-%d-%H") # نضيف الساعة علمود ما يكرر كل ساعة
+        today = datetime.now().strftime("%Y-%m-%d-%H")
         news_hash = hashlib.md5(f"{name}_{today}".encode()).hexdigest()
 
         if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
-                # نخفي المصدر تماماً
-                msg = f"""🔴 عاجل | صرف الرواتب
+                # نخفي المصدر بس نذكر اسم الوزارة
+                msg = f"""🔴 عاجل | رواتب {display_name}
 
-تم رصد خبر صرف الرواتب من مصادر موثوقة.
+تم رصد خبر صرف رواتب {display_name} من مصادر موثوقة.
 
 تابع الجديد على {CHANNEL_USERNAME}"""
                 try:
@@ -292,6 +316,17 @@ async def handle_message(update):
     if update.message.text == "/start":
         try:
             logger.info(f"تنفيذ /start للعضو {user_id}")
+
+            # فحص الاشتراك الاجباري
+            if not await is_subscribed(user_id):
+                keyboard = [[InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")]]
+                await bot.send_message(
+                    chat_id=update.message.chat.id,
+                    text="⚠️ لازم تشترك بالقناة اولاً علمود تستخدم البوت",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
+
             # زر لوحة التحكم يطلع بس للادمن
             keyboard = [
                 [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
@@ -388,7 +423,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V3 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V4 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -464,7 +499,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V3 Pro بدون اشتراك اجباري")
+    logger.info("✅ البوت شغال - V4 Pro مع اشتراك اجباري")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
