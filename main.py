@@ -1,10 +1,26 @@
 # -*- coding: utf-8 -*-
-import asyncio, json, os, re
+import asyncio, json, os, re, threading
 from datetime import datetime
 import httpx
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ========== سيرفر وهمي لـ Render ==========
+class FakeHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+    def log_message(self, format, *args):
+        return
+
+def run_fake_server():
+    port = int(os.environ.get('PORT', 10000))
+    server = HTTPServer(('0.0.0.0', port), FakeHandler)
+    print(f"🌐 سيرفر وهمي شغال على المنفذ {port}")
+    server.serve_forever()
 
 # ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -281,4 +297,6 @@ async def main():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
+    # شغل السيرفر الوهمي قبل البوت
+    threading.Thread(target=run_fake_server, daemon=True).start()
     asyncio.run(main())
