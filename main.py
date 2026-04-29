@@ -24,7 +24,6 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# ضفت "BANK_DEFAULT" لكل وزارة - اذا ما لكه مصرف بالخبر يستخدم هذا
 SALARY_SOURCES = {
     "وزارة المالية": {
         "TELEGRAM": "Mof_Iraq",
@@ -45,7 +44,7 @@ SALARY_SOURCES = {
         "DISPLAY": "وزارة الدفاع",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي", "الوجبة"],
         "PRIORITY": 1,
-        "BANK_DEFAULT": "مصرف الرافدين" # الدفاع دائماً رافدين اول شي
+        "BANK_DEFAULT": "مصرف الرافدين"
     },
     "وزارة الصحة": {
         "TELEGRAM": "mohiraq",
@@ -120,13 +119,14 @@ def load_config():
             if "users" not in data: data["users"] = []
             if "اخبار_منشورة" not in data: data["اخبار_منشورة"] = []
             if "اخر_نشر_وزارة" not in data: data["اخر_نشر_وزارة"] = {}
+            if "احصائيات_اليوم" not in data: data["احصائيات_اليوم"] = {}
             for name in SALARY_SOURCES:
                 if name not in data["مصادر"]:
                     data["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
             return data
     except:
         config = {
-            "آخر_الأخبار": [], "اخبار_منشورة": [], "اخر_نشر_وزارة": {}, "is_running": True, "الوضع الصامت": False,
+            "آخر_الأخبار": [], "اخبار_منشورة": [], "اخر_نشر_وزارة": {}, "احصائيات_اليوم": {}, "is_running": True, "الوضع الصامت": False,
             "dollar_enabled": True, "آخر عملية شراء": 1310, "آخر عملية بيع": 1550,
             "آخر_تاريخ_للشراء": "", "آخر_تاريخ_للبيع": "", "dollar_msg_id": None,
             "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}, "users": [],
@@ -149,36 +149,32 @@ def is_real_news(text, keyword):
             return False
     return True
 
-def extract_bank(text, source_name):
-    # نفحص النص كامل
-    text_full = text[:1000].lower()
+def extract_bank_and_wajba(text, source_name):
+    text_full = text[:1000]
+    bank = SALARY_SOURCES[source_name].get("BANK_DEFAULT", "مصرف غير محدد")
+    wajba = ""
 
-    # الرافدين
-    if any(x in text_full for x in ["رافدين", "الرافدين", "مصرف الرافدين", "مصرفالرافدين", "rafidain", "الوجبة الاولى"]):
-        return "مصرف الرافدين"
+    if any(x in text_full for x in ["رافدين", "الرافدين", "مصرف الرافدين", "مصرفالرافدين", "rafidain"]):
+        bank = "مصرف الرافدين"
+    elif any(x in text_full for x in ["الرشيد", "رشيد", "مصرف الرشيد", "مصرفالرشيد", "rasheed", "rashid"]):
+        bank = "مصرف الرشيد"
+    elif any(x in text_full for x in ["الاهلي", "اهلي", "المصرف الاهلي", "ahli"]):
+        bank = "المصرف الاهلي"
+    elif any(x in text_full.lower() for x in ["tbi", "تيبياي", "التجاري العراقي", "تجاري"]):
+        bank = "مصرف TBI"
+    elif "صناعي" in text_full:
+        bank = "المصرف الصناعي"
+    elif "زراعي" in text_full:
+        bank = "المصرف الزراعي"
 
-    # الرشيد
-    if any(x in text_full for x in ["الرشيد", "رشيد", "مصرف الرشيد", "مصرفالرشيد", "rasheed", "rashid", "الوجبة الثانية"]):
-        return "مصرف الرشيد"
+    if "الوجبة الاولى" in text_full or "الوجبة الأولى" in text_full or "الوجبه الاولى" in text_full:
+        wajba = "الوجبة الاولى"
+    elif "الوجبة الثانية" in text_full or "الوجبه الثانية" in text_full:
+        wajba = "الوجبة الثانية"
+    elif "الوجبة الثالثة" in text_full or "الوجبه الثالثة" in text_full:
+        wajba = "الوجبة الثالثة"
 
-    # الاهلي
-    if any(x in text_full for x in ["الاهلي", "اهلي", "المصرف الاهلي", "ahli"]):
-        return "المصرف الاهلي"
-
-    # TBI
-    if any(x in text_full for x in ["tbi", "تيبياي", "التجاري العراقي", "تجاري"]):
-        return "مصرف TBI"
-
-    # الصناعي
-    if "صناعي" in text_full:
-        return "المصرف الصناعي"
-
-    # الزراعي
-    if "زراعي" in text_full:
-        return "المصرف الزراعي"
-
-    # اذا ما لكه شي، يستخدم المصرف الافتراضي من SALARY_SOURCES
-    return SALARY_SOURCES[source_name].get("BANK_DEFAULT", "مصرف غير محدد")
+    return bank, wajba
 
 async def fetch_url(url):
     headers = {
@@ -199,7 +195,7 @@ async def check_telegram_channel(channel_username, keywords, display_name, sourc
         status, html = await fetch_url(url)
         if status!= 200:
             logger.error(f"فشل قراءة قناة {channel_username}: {status}")
-            return False, "", ""
+            return False, "", "", ""
 
         messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
         for msg_html in messages[-20:]:
@@ -209,13 +205,13 @@ async def check_telegram_channel(channel_username, keywords, display_name, sourc
 
             for keyword in keywords:
                 if keyword in text and is_real_news(text, keyword):
-                    bank = extract_bank(text, source_name)
-                    logger.info(f"خبر {display_name}: {text[:100]} | مصرف: {bank}")
-                    return True, text[:500], bank
-        return False, "", ""
+                    bank, wajba = extract_bank_and_wajba(text, source_name)
+                    logger.info(f"خبر {display_name}: {text[:100]} | مصرف: {bank} | وجبة: {wajba}")
+                    return True, text[:500], bank, wajba
+        return False, "", "", ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
-        return False, "", ""
+        return False, "", "", ""
 
 async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
@@ -227,9 +223,10 @@ async def check_single_source(name, source, config, silent=True):
     found = False
     news_text = ""
     bank_name = ""
+    wajba = ""
 
     if "TELEGRAM" in source:
-        found, news_text, bank_name = await check_telegram_channel(source["TELEGRAM"], keywords, display_name, name)
+        found, news_text, bank_name, wajba = await check_telegram_channel(source["TELEGRAM"], keywords, display_name, name)
         if not found:
             return f"🔵 {name}: لا يوجد جديد بالقناة"
 
@@ -242,7 +239,7 @@ async def check_single_source(name, source, config, silent=True):
             if keyword in text and is_real_news(text, keyword):
                 found = True
                 news_text = text
-                bank_name = extract_bank(text, name)
+                bank_name, wajba = extract_bank_and_wajba(text, name)
                 break
         if not found:
             return f"🔵 {name}: لا يوجد جديد"
@@ -251,7 +248,6 @@ async def check_single_source(name, source, config, silent=True):
         today = datetime.now().strftime("%Y-%m-%d")
         current_time = datetime.now()
 
-        # منع التكرار القوي: ما ينشر نفس الوزارة الا بعد 3 ساعات
         last_post_time = config.get("اخر_نشر_وزارة", {}).get(name)
         if last_post_time:
             last_time = datetime.fromisoformat(last_post_time)
@@ -259,7 +255,6 @@ async def check_single_source(name, source, config, silent=True):
                 logger.info(f"تخطي {name} لان انشر قبل 3 ساعات")
                 return f"🟡 {name}: تم تخطيه - منشور قبل اقل من 3 ساعات"
 
-        # منع نشر الخبر العام اذا اكو خبر خاص اليوم
         if priority == 2:
             for w in SALARY_SOURCES:
                 if SALARY_SOURCES[w].get("PRIORITY", 1) == 1:
@@ -270,15 +265,17 @@ async def check_single_source(name, source, config, silent=True):
                             logger.info(f"تخطي الخبر العام لان اكو خبر خاص منشور")
                             return f"🟡 {name}: تم تخطيه لان اكو خبر خاص"
 
-        news_hash = hashlib.md5(f"{name}_{today}_{bank_name}".encode()).hexdigest()
+        news_hash = hashlib.md5(f"{name}_{today}_{bank_name}_{wajba}".encode()).hexdigest()
 
         if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
                 title = f"🔴 عاجل | رواتب {display_name} - {bank_name}"
+                if wajba:
+                    title += f" - {wajba}"
 
                 msg = f"""{title}
 
-تم رصد خبر صرف رواتب {display_name} - {bank_name} من مصادر موثوقة.
+تم رصد خبر صرف رواتب {display_name} - {bank_name}{f' - {wajba}' if wajba else ''} من مصادر موثوقة.
 
 تابع الجديد على {CHANNEL_USERNAME}"""
                 try:
@@ -287,12 +284,25 @@ async def check_single_source(name, source, config, silent=True):
                     else:
                         sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
                         config["last_salary_msg_id"] = sent.message_id
-                    logger.info(f"تم نشر خبر {name} - {bank_name}")
+                    logger.info(f"تم نشر خبر {name} - {bank_name} - {wajba}")
 
-                    # نحفظ وقت النشر
                     if "اخر_نشر_وزارة" not in config:
                         config["اخر_نشر_وزارة"] = {}
                     config["اخر_نشر_وزارة"][name] = current_time.isoformat()
+
+                    if "احصائيات_اليوم" not in config:
+                        config["احصائيات_اليوم"] = {}
+                    if today not in config["احصائيات_اليوم"]:
+                        config["احصائيات_اليوم"][today] = {}
+                    config["احصائيات_اليوم"][today][name] = {"bank": bank_name, "wajba": wajba, "time": current_time.strftime("%H:%M")}
+
+                    try:
+                        await bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=f"✅ تم نشر خبر جديد:\n\n{display_name} - {bank_name}{f' - {wajba}' if wajba else ''}\n\nالوقت: {current_time.strftime('%H:%M')}"
+                        )
+                    except:
+                        pass
 
                 except Exception as e:
                     logger.error(f"فشل نشر خبر {name}: {e}")
@@ -304,7 +314,10 @@ async def check_single_source(name, source, config, silent=True):
                     config["اخبار_منشورة"] = config["اخبار_منشورة"][-200:]
                 save_config(config)
 
-            return f"🟢 {name}: تم العثور على خبر - {bank_name}"
+            result_text = f"🟢 {name}: تم العثور على خبر - {bank_name}"
+            if wajba:
+                result_text += f" - {wajba}"
+            return result_text
         else:
             return f"🟡 {name}: خبر مكرر"
     return f"🔵 {name}: لا يوجد جديد"
@@ -383,6 +396,33 @@ def get_dollar_message():
 تابع قناتنا @w3vv لكل جديد"""
     return msg
 
+def get_stats_message(config):
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_data = config.get("احصائيات_اليوم", {}).get(today, {})
+
+    if not today_data:
+        return "📊 لا توجد رواتب منشورة اليوم"
+
+    msg = f"📊 احصائيات اليوم {today}\n\n✅ تم صرف رواتب {len(today_data)} جهة:\n\n"
+    for i, (name, data) in enumerate(today_data.items(), 1):
+        display = SALARY_SOURCES[name]["DISPLAY"]
+        bank = data["bank"]
+        wajba = data.get("wajba", "")
+        time = data["time"]
+        msg += f"{i}. {display} - {bank}{f' - {wajba}' if wajba else ''} ⏰ {time}\n"
+
+    not_paid = []
+    for name in SALARY_SOURCES:
+        if SALARY_SOURCES[name].get("PRIORITY", 1) == 1 and name not in today_data:
+            not_paid.append(SALARY_SOURCES[name]["DISPLAY"])
+
+    if not_paid:
+        msg += f"\n❌ لم يتم صرف:\n"
+        for i, n in enumerate(not_paid, 1):
+            msg += f"{i}. {n}\n"
+
+    return msg
+
 def get_admin_panel(config):
     enabled_count = sum(1 for s in config["مصادر"].values() if s.get("enabled", True))
     status_run = "شغال" if config['is_running'] else "متوقف"
@@ -393,6 +433,7 @@ def get_admin_panel(config):
     keyboard = [
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
         [InlineKeyboardButton("💵 اسعار الدولار", callback_data="dollar_prices")],
+        [InlineKeyboardButton("📊 احصائيات اليوم", callback_data="stats_today")],
         [InlineKeyboardButton("📰 جلب الاخبار", callback_data="fetch_news")],
         [InlineKeyboardButton("🗑️ حذف آخر منشور", callback_data="delete_last")],
         [InlineKeyboardButton("💾 نسخة احتياطية", callback_data="backup")],
@@ -523,12 +564,16 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V11 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V12 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
         sell = config['آخر عملية بيع']
         await bot.send_message(chat_id=ADMIN_ID, text=f"💵 اسعار الدولار الحالية:\n\n🔻 شراء: {buy:,} د.ع\n🔺 بيع: {sell:,} د.ع\n\n⏰ {config.get('آخر_تاريخ_للبيع', 'لا يوجد')}")
+        return
+    elif data == "stats_today":
+        stats_msg = get_stats_message(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=stats_msg)
         return
     elif data == "fetch_news":
         msg = await bot.send_message(chat_id=ADMIN_ID, text="⏳ جاري جلب الاخبار...")
@@ -614,7 +659,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V11 Pro مصرف افتراضي")
+    logger.info("✅ البوت شغال - V12 Pro وجبة + تنبيه + احصائيات")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
