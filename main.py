@@ -24,7 +24,6 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# مصادر جديدة: قنوات تلكرام + وكالة الانباء العراقية
 SALARY_SOURCES = {
     "وزارة المالية": {
         "TELEGRAM": "Mof_Iraq",
@@ -59,9 +58,9 @@ SALARY_SOURCES = {
 }
 
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
+BANKS = ["الرافدين", "الرشيد", "الاهلي", "TBI", "الصناعي", "الزراعي"]
 
 async def is_subscribed(user_id):
-    # فحص الاشتراك الاجباري مع تحمل الاخطاء
     if user_id == ADMIN_ID:
         return True
     try:
@@ -69,7 +68,7 @@ async def is_subscribed(user_id):
         return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
     except Exception as e:
         logger.error(f"خطأ فحص الاشتراك للعضو {user_id}: {e}")
-        return True # اذا صار خطأ نعتبره مشترك علمود ما نكرش
+        return True
 
 def load_config():
     try:
@@ -109,6 +108,12 @@ def is_real_news(text, keyword):
             return False
     return True
 
+def extract_bank(text):
+    for bank in BANKS:
+        if bank in text:
+            return f"مصرف {bank}"
+    return ""
+
 async def fetch_url(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -124,28 +129,26 @@ async def fetch_url(url):
 
 async def check_telegram_channel(channel_username, keywords, display_name):
     try:
-        # نقرأ من t.me/s/ بدون ما نحتاج ادمن
         url = f"https://t.me/s/{channel_username}"
         status, html = await fetch_url(url)
         if status!= 200:
             logger.error(f"فشل قراءة قناة {channel_username}: {status}")
-            return False, ""
+            return False, "", ""
 
-        # نطلع اخر 10 منشورات
         messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
         for msg_html in messages[-10:]:
-            # نحول HTML لنص عادي
             text = re.sub(r'<br/?>', '\n', msg_html)
             text = re.sub(r'<[^>]+>', '', text)
             text = text.strip()
 
             for keyword in keywords:
                 if keyword in text and is_real_news(text, keyword):
-                    return True, text[:200]
-        return False, ""
+                    bank = extract_bank(text)
+                    return True, text[:200], bank
+        return False, "", ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
-        return False, ""
+        return False, "", ""
 
 async def check_single_source(name, source, config, silent=True):
     if not config["مصادر"].get(name, {}).get("enabled", True):
@@ -155,14 +158,13 @@ async def check_single_source(name, source, config, silent=True):
     display_name = source.get("DISPLAY", name)
     found = False
     news_text = ""
+    bank_name = ""
 
-    # اذا عنده قناة تلكرام نفحصها من الويب
     if "TELEGRAM" in source:
-        found, news_text = await check_telegram_channel(source["TELEGRAM"], keywords, display_name)
+        found, news_text, bank_name = await check_telegram_channel(source["TELEGRAM"], keywords, display_name)
         if not found:
             return f"🔵 {name}: لا يوجد جديد بالقناة"
 
-    # اذا عنده رابط موقع نفحصه
     elif "URL" in source:
         status, text = await fetch_url(source["URL"])
         if status!= 200:
@@ -172,20 +174,25 @@ async def check_single_source(name, source, config, silent=True):
             if keyword in text and is_real_news(text, keyword):
                 found = True
                 news_text = text
+                bank_name = extract_bank(text)
                 break
         if not found:
             return f"🔵 {name}: لا يوجد جديد"
 
     if found:
         today = datetime.now().strftime("%Y-%m-%d-%H")
-        news_hash = hashlib.md5(f"{name}_{today}".encode()).hexdigest()
+        news_hash = hashlib.md5(f"{name}_{today}_{bank_name}".encode()).hexdigest()
 
         if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
-                # نخفي المصدر بس نذكر اسم الوزارة
-                msg = f"""🔴 عاجل | رواتب {display_name}
+                # نضيف اسم المصرف اذا موجود
+                title = f"🔴 عاجل | رواتب {display_name}"
+                if bank_name:
+                    title += f" - {bank_name}"
 
-تم رصد خبر صرف رواتب {display_name} من مصادر موثوقة.
+                msg = f"""{title}
+
+تم رصد خبر صرف رواتب {display_name}{f' - {bank_name}' if bank_name else ''} من مصادر موثوقة.
 
 تابع الجديد على {CHANNEL_USERNAME}"""
                 try:
@@ -194,7 +201,7 @@ async def check_single_source(name, source, config, silent=True):
                     else:
                         sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
                         config["last_salary_msg_id"] = sent.message_id
-                    logger.info(f"تم نشر خبر {name}")
+                    logger.info(f"تم نشر خبر {name} - {bank_name}")
                 except Exception as e:
                     logger.error(f"فشل نشر خبر {name}: {e}")
 
@@ -204,7 +211,7 @@ async def check_single_source(name, source, config, silent=True):
                 if len(config["اخبار_منشورة"]) > 200:
                     config["اخبار_منشورة"] = config["اخبار_منشورة"][-200:]
                 save_config(config)
-            return f"🟢 {name}: تم العثور على خبر"
+            return f"🟢 {name}: تم العثور على خبر {bank_name}"
         else:
             return f"🟡 {name}: خبر مكرر"
     return f"🔵 {name}: لا يوجد جديد"
@@ -317,7 +324,6 @@ async def handle_message(update):
         try:
             logger.info(f"تنفيذ /start للعضو {user_id}")
 
-            # فحص الاشتراك الاجباري
             if not await is_subscribed(user_id):
                 keyboard = [[InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")]]
                 await bot.send_message(
@@ -327,7 +333,6 @@ async def handle_message(update):
                 )
                 return
 
-            # زر لوحة التحكم يطلع بس للادمن
             keyboard = [
                 [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
                 [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
@@ -423,7 +428,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V4 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V5 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -499,7 +504,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V4 Pro مع اشتراك اجباري")
+    logger.info("✅ البوت شغال - V5 Pro مع ذكر المصرف")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
