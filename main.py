@@ -18,7 +18,7 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# ========== مصادر الرواتب - حذفت كل المواقع الميتة ==========
+# ========== مصادر الرواتب ==========
 SALARY_SOURCES = {
     "الرعاية الاجتماعية والمتقاعدين": {
         "URL": "https://molsa.gov.iq/",
@@ -81,13 +81,13 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-# ========== دوال الفحص - تتجاهل الاخطاء بصمت ==========
+# ========== دوال الفحص ==========
 async def fetch_url(url):
     try:
         r = await client.get(url, follow_redirects=True)
         return r.status_code, r.text
     except:
-        return 0, "" # فشل بصمت بدون ارسال شي
+        return 0, ""
 
 async def check_single_source(name, source, config):
     if not config["مصادر"].get(name, {}).get("enabled", True):
@@ -95,7 +95,7 @@ async def check_single_source(name, source, config):
 
     status, text = await fetch_url(source["URL"])
     if status!= 200:
-        return # تجاهل بصمت
+        return
 
     keywords = config["مصادر"][name].get("keywords", source["KEYWORDS"])
     found_keyword = None
@@ -249,8 +249,6 @@ async def handle_callback(update):
 
 # ========== التشغيل الرئيسي ==========
 async def main():
-    # هذا السطر يحل مشكلة Conflict: terminated by other getUpdates
-    # يحذف اي Webhook معلق ويقتل اي نسخة قديمة
     await bot.delete_webhook(drop_pending_updates=True)
 
     offset = 0
@@ -283,4 +281,23 @@ async def main():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
+    # ========== حل مشكلة بورت Render ==========
+    import threading, os
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class DummyHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'Bot Running')
+        def log_message(self, format, *args):
+            return
+
+    def start_fake_server():
+        port = int(os.environ.get('PORT', 10000))
+        HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
+
+    threading.Thread(target=start_fake_server, daemon=True).start()
+    # ========== نهاية الحل ==========
+
     asyncio.run(main())
