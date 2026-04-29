@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-import asyncio, json, os, re
+import asyncio, json, os, re, logging
 from datetime import datetime
 import httpx
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError
 
+# ========== تفعيل اللوجز ==========
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002350481912")) # ID قناتك
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002350481912"))
 CHANNEL_USERNAME = "@w_3_vv"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -22,7 +26,6 @@ client = httpx.AsyncClient(timeout=30.0, limits=httpx.Limits(max_connections=10)
 bot = Bot(token=BOT_TOKEN)
 CONFIG_FILE = 'bot_config.json'
 
-# ========== مصادر الرواتب - روابط محدثة ==========
 SALARY_SOURCES = {
     "الرعاية الاجتماعية والمتقاعدين": {
         "URL": "https://molsa.gov.iq/ar/news",
@@ -60,15 +63,19 @@ SALARY_SOURCES = {
 
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
 
-# ========== فحص الاشتراك الاجباري - مع طباعة الخطأ ==========
+# ========== فحص الاشتراك - مصلح ==========
 async def is_subscribed(user_id):
+    # اذا الادمن نفسه نخليه يمر
+    if user_id == ADMIN_ID:
+        return True
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        print(f"فحص العضو {user_id}: {member.status}")
+        logger.info(f"فحص العضو {user_id}: {member.status}")
         return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
     except TelegramError as e:
-        print(f"خطأ فحص الاشتراك: {e}") # شوف هذا باللوجز
-        return True # نمرره اذا صار خطأ
+        logger.error(f"خطأ فحص الاشتراك للعضو {user_id}: {e}")
+        # اذا صار خطأ نرجع False علمود يطلع زر الاشتراك
+        return False
 
 def load_config():
     try:
@@ -252,7 +259,7 @@ def get_admin_panel(config):
     status_silent = "مفعل" if config['الوضع الصامت'] else "معطل"
     status_dollar = "مفعل" if config['dollar_enabled'] else "معطل"
     pin_status = "مثبت" if config['dollar_msg_id'] else "غير مثبت"
-    status_text = f"⚙️ لوحة تحكم @w3vv\n\n📊 الحالة: {status_run} | الصامت: {status_silent} 🔔\n💵 الدولار: {status_dollar} | {pin_status} ❌\n🏦 شراء: {config['آخر عملية شراء']:,} | بيع: {config['آخر عملية بيع']:,}\n📡 مصادر الرواتب: {enabled_count} مفعلة"
+    status_text = f"⚙️ لوحة تحكم @w3vv\n\n📊 الحالة: {status_run} | الصامت: {status_silent} 🔔\n💵 الدولار: {status_dollar} | {pin_status} ❌\n🏦 شراء: {config['آخر عملية شراء']:,} | بيع: {config['آخر عملية بيع']:,}\n📡 مصادر الرواتب: {enabled_count} مفعلة\n\nCHANNEL_ID: {CHANNEL_ID}"
 
     keyboard = [
         [InlineKeyboardButton("👨‍💻 معلومات المطور", callback_data="dev_info")],
@@ -273,33 +280,41 @@ async def handle_message(update):
     config = load_config()
 
     user_id = update.message.from_user.id
+    logger.info(f"وصلت رسالة من {user_id}: {update.message.text}")
+
     if user_id not in config["users"]:
         config["users"].append(user_id)
         save_config(config)
 
     if update.message.text == "/start":
-        subscribed = await is_subscribed(user_id)
-        if not subscribed:
+        try:
+            subscribed = await is_subscribed(user_id)
+            logger.info(f"نتيجة فحص الاشتراك للعضو {user_id}: {subscribed}")
+
+            if not subscribed:
+                keyboard = [
+                    [InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
+                    [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_sub")]
+                ]
+                await bot.send_message(
+                    chat_id=update.message.chat.id,
+                    text=f"⚠️ يجب الاشتراك في القناة اولاً\n\n📢 {CHANNEL_USERNAME}\n\nبعد الاشتراك اضغط 'تحققت من الاشتراك'",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
+
             keyboard = [
-                [InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
-                [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_sub")]
+                [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
+                [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
             ]
             await bot.send_message(
                 chat_id=update.message.chat.id,
-                text=f"⚠️ يجب الاشتراك في القناة اولاً\n\n📢 {CHANNEL_USERNAME}\n\nبعد الاشتراك اضغط 'تحققت من الاشتراك'",
+                text="👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            return
-
-        keyboard = [
-            [InlineKeyboardButton("👨‍💻 المطور", callback_data="dev_info_user")],
-            [InlineKeyboardButton("💵 سعر صرف الدولار", callback_data="sarf_user")]
-        ]
-        await bot.send_message(
-            chat_id=update.message.chat.id,
-            text="👋 اهلاً بك في بوت رواتب العراق\n\nاختر من الازرار:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        except Exception as e:
+            logger.error(f"خطأ في /start: {e}")
+            await bot.send_message(chat_id=update.message.chat.id, text="❌ صار خطأ، جرب مرة ثانية")
         return
 
     if update.message.text == "/sarf":
@@ -471,8 +486,8 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    print("✅ البوت شغال - V2 Pro")
-    print(f"CHANNEL_ID: {CHANNEL_ID}")
+    logger.info("✅ البوت شغال - V2 Pro")
+    logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
         try:
@@ -494,7 +509,7 @@ async def main():
                 last_dollar_check = now
 
         except Exception as e:
-            print(f"خطأ: {e}")
+            logger.error(f"خطأ رئيسي: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
