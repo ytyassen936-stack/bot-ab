@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio, json, os, re, logging, hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatMemberStatus
@@ -56,19 +56,19 @@ SALARY_SOURCES = {
         "PRIORITY": 1
     },
     "هيئة التقاعد الوطنية": {
-        "TELEGRAM": "pension_iraq", # قناة التقاعد الرسمية
+        "TELEGRAM": "pension_iraq",
         "DISPLAY": "المتقاعدين",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "المتقاعدين", "التقاعد", "المتقاعد", "معين"],
         "PRIORITY": 1
     },
     "وزارة العمل - الرعاية": {
-        "TELEGRAM": "molsa_iq", # قناة وزارة العمل
+        "TELEGRAM": "molsa_iq",
         "DISPLAY": "الرعاية الاجتماعية",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الرعاية", "الحماية", "الاجتماعية", "المعين", "المتفرغ"],
         "PRIORITY": 1
     },
     "هيئة الحشد الشعبي": {
-        "TELEGRAM": "teamsmediawar", # اعلام الحشد
+        "TELEGRAM": "teamsmediawar",
         "DISPLAY": "الحشد الشعبي",
         "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الحشد", "الشعبي", "منتسبي"],
         "PRIORITY": 1
@@ -88,7 +88,6 @@ SALARY_SOURCES = {
 }
 
 NEGATIVE_CONTEXT = ["لا يوجد", "عدم", "تأجيل", "ايقاف", "الغاء", "نفي", "اشاعة", "كاذب", "غير صحيح", "لم يتم"]
-BANKS = ["الرافدين", "الرشيد", "الاهلي", "TBI", "الصناعي", "الزراعي", "مصرف الرافدين", "مصرف الرشيد"]
 
 async def is_subscribed(user_id):
     if user_id == ADMIN_ID:
@@ -109,13 +108,14 @@ def load_config():
             if "مصادر" not in data: data["مصادر"] = {}
             if "users" not in data: data["users"] = []
             if "اخبار_منشورة" not in data: data["اخبار_منشورة"] = []
+            if "اخر_نشر_وزارة" not in data: data["اخر_نشر_وزارة"] = {} # وقت اخر نشر لكل وزارة
             for name in SALARY_SOURCES:
                 if name not in data["مصادر"]:
                     data["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
             return data
     except:
         config = {
-            "آخر_الأخبار": [], "اخبار_منشورة": [], "is_running": True, "الوضع الصامت": False,
+            "آخر_الأخبار": [], "اخبار_منشورة": [], "اخر_نشر_وزارة": {}, "is_running": True, "الوضع الصامت": False,
             "dollar_enabled": True, "آخر عملية شراء": 1310, "آخر عملية بيع": 1550,
             "آخر_تاريخ_للشراء": "", "آخر_تاريخ_للبيع": "", "dollar_msg_id": None,
             "last_salary_msg_id": None, "admin_ids": [ADMIN_ID], "مصادر": {}, "users": [],
@@ -139,16 +139,28 @@ def is_real_news(text, keyword):
     return True
 
 def extract_bank(text):
-    text = text.lower()
-    if "رافدين" in text or "rafidain" in text:
+    # بحث شامل عن اسم المصرف
+    text_clean = text.replace(" ", "").replace("\n", "")
+
+    if any(x in text for x in ["الرافدين", "رافدين", "مصرفالرافدين", "رافدين", "Rafidain", "rafidain"]):
         return "مصرف الرافدين"
-    if "رشيد" in text or "rasheed" in text:
+
+    if any(x in text for x in ["الرشيد", "رشيد", "مصرفالرشيد", "Rasheed", "rasheed", "Rashid"]):
         return "مصرف الرشيد"
-    if "الاهلي" in text or "اهلي" in text:
+
+    if any(x in text for x in ["الاهلي", "اهلي", "المصرفالاهلي", "اهليعراقي", "Ahli"]):
         return "المصرف الاهلي"
-    if "tbi" in text:
+
+    if any(x in text.lower() for x in ["tbi", "تيبياي", "التجاريالعراقي", "تجاري"]):
         return "مصرف TBI"
-    return ""
+
+    if "صناعي" in text:
+        return "المصرف الصناعي"
+
+    if "زراعي" in text:
+        return "المصرف الزراعي"
+
+    return "مصرف غير محدد"
 
 async def fetch_url(url):
     headers = {
@@ -172,7 +184,7 @@ async def check_telegram_channel(channel_username, keywords, display_name):
             return False, "", ""
 
         messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
-        for msg_html in messages[-10:]:
+        for msg_html in messages[-15:]:
             text = re.sub(r'<br/?>', '\n', msg_html)
             text = re.sub(r'<[^>]+>', '', text)
             text = text.strip()
@@ -180,7 +192,8 @@ async def check_telegram_channel(channel_username, keywords, display_name):
             for keyword in keywords:
                 if keyword in text and is_real_news(text, keyword):
                     bank = extract_bank(text)
-                    return True, text[:300], bank
+                    logger.info(f"خبر {display_name}: {text[:100]} | مصرف: {bank}")
+                    return True, text[:400], bank
         return False, "", ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
@@ -217,24 +230,37 @@ async def check_single_source(name, source, config, silent=True):
             return f"🔵 {name}: لا يوجد جديد"
 
     if found:
-        today = datetime.now().strftime("%Y-%m-%d-%H")
-        news_hash = hashlib.md5(f"{name}_{today}_{bank_name}".encode()).hexdigest()
+        today = datetime.now().strftime("%Y-%m-%d")
+        current_time = datetime.now()
 
+        # منع التكرار القوي: ما ينشر نفس الوزارة الا بعد 3 ساعات
+        last_post_time = config.get("اخر_نشر_وزارة", {}).get(name)
+        if last_post_time:
+            last_time = datetime.fromisoformat(last_post_time)
+            if current_time - last_time < timedelta(hours=3):
+                logger.info(f"تخطي {name} لان انشر قبل 3 ساعات")
+                return f"🟡 {name}: تم تخطيه - منشور قبل اقل من 3 ساعات"
+
+        # منع نشر الخبر العام اذا اكو خبر خاص اليوم
         if priority == 2:
-            for h in config.get("اخبار_منشورة", []):
-                if today in h and "وزارة" in h:
-                    logger.info(f"تخطي الخبر العام لان اكو خبر خاص منشور")
-                    return f"🟡 {name}: تم تخطيه لان اكو خبر خاص"
+            for w in SALARY_SOURCES:
+                if SALARY_SOURCES[w].get("PRIORITY", 1) == 1:
+                    last_w_time = config.get("اخر_نشر_وزارة", {}).get(w)
+                    if last_w_time:
+                        last_time = datetime.fromisoformat(last_w_time)
+                        if current_time - last_time < timedelta(hours=3):
+                            logger.info(f"تخطي الخبر العام لان اكو خبر خاص منشور")
+                            return f"🟡 {name}: تم تخطيه لان اكو خبر خاص"
+
+        news_hash = hashlib.md5(f"{name}_{today}_{bank_name}".encode()).hexdigest()
 
         if news_hash not in config.get("اخبار_منشورة", []):
             if not silent:
-                title = f"🔴 عاجل | رواتب {display_name}"
-                if bank_name:
-                    title += f" - {bank_name}"
+                title = f"🔴 عاجل | رواتب {display_name} - {bank_name}"
 
                 msg = f"""{title}
 
-تم رصد خبر صرف رواتب {display_name}{f' - {bank_name}' if bank_name else ''} من مصادر موثوقة.
+تم رصد خبر صرف رواتب {display_name} - {bank_name} من مصادر موثوقة.
 
 تابع الجديد على {CHANNEL_USERNAME}"""
                 try:
@@ -244,6 +270,12 @@ async def check_single_source(name, source, config, silent=True):
                         sent = await bot.send_message(chat_id=CHANNEL_ID, text=msg, disable_web_page_preview=True)
                         config["last_salary_msg_id"] = sent.message_id
                     logger.info(f"تم نشر خبر {name} - {bank_name}")
+
+                    # نحفظ وقت النشر
+                    if "اخر_نشر_وزارة" not in config:
+                        config["اخر_نشر_وزارة"] = {}
+                    config["اخر_نشر_وزارة"][name] = current_time.isoformat()
+
                 except Exception as e:
                     logger.error(f"فشل نشر خبر {name}: {e}")
 
@@ -253,7 +285,8 @@ async def check_single_source(name, source, config, silent=True):
                 if len(config["اخبار_منشورة"]) > 200:
                     config["اخبار_منشورة"] = config["اخبار_منشورة"][-200:]
                 save_config(config)
-            return f"🟢 {name}: تم العثور على خبر {bank_name}"
+
+            return f"🟢 {name}: تم العثور على خبر - {bank_name}"
         else:
             return f"🟡 {name}: خبر مكرر"
     return f"🔵 {name}: لا يوجد جديد"
@@ -471,7 +504,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V7 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V9 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -547,7 +580,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V7 Pro التقاعد + الرعاية")
+    logger.info("✅ البوت شغال - V9 Pro منع التكرار النهائي")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
