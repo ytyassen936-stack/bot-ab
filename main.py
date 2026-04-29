@@ -40,7 +40,7 @@ SALARY_SOURCES = {
     "وزارة الدفاع": {
         "TELEGRAM": "MODiraq",
         "DISPLAY": "وزارة الدفاع",
-        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي"],
+        "KEYWORDS": ["رواتب", "الرواتب", "صرف", "الدفاع", "الجيش", "منتسبي", "الوجبة"],
         "PRIORITY": 1
     },
     "وزارة الصحة": {
@@ -108,7 +108,7 @@ def load_config():
             if "مصادر" not in data: data["مصادر"] = {}
             if "users" not in data: data["users"] = []
             if "اخبار_منشورة" not in data: data["اخبار_منشورة"] = []
-            if "اخر_نشر_وزارة" not in data: data["اخر_نشر_وزارة"] = {} # وقت اخر نشر لكل وزارة
+            if "اخر_نشر_وزارة" not in data: data["اخر_نشر_وزارة"] = {}
             for name in SALARY_SOURCES:
                 if name not in data["مصادر"]:
                     data["مصادر"][name] = {"enabled": True, "keywords": SALARY_SOURCES[name]["KEYWORDS"]}
@@ -139,27 +139,34 @@ def is_real_news(text, keyword):
     return True
 
 def extract_bank(text):
-    # بحث شامل عن اسم المصرف
-    text_clean = text.replace(" ", "").replace("\n", "")
+    # بحث شامل - نفحص 500 حرف من النص
+    text_full = text[:500]
 
-    if any(x in text for x in ["الرافدين", "رافدين", "مصرفالرافدين", "رافدين", "Rafidain", "rafidain"]):
+    # الرافدين
+    if any(x in text_full for x in ["الرافدين", "رافدين", "مصرفالرافدين", "مصرف الرافدين", "الوجبة الاولى الرافدين", "الوجبةالاولىالرافدين", "Rafidain", "rafidain", "الرافدين", "رافدين"]):
         return "مصرف الرافدين"
 
-    if any(x in text for x in ["الرشيد", "رشيد", "مصرفالرشيد", "Rasheed", "rasheed", "Rashid"]):
+    # الرشيد
+    if any(x in text_full for x in ["الرشيد", "رشيد", "مصرفالرشيد", "مصرف الرشيد", "الوجبة الاولى الرشيد", "Rasheed", "rasheed", "Rashid", "rashid"]):
         return "مصرف الرشيد"
 
-    if any(x in text for x in ["الاهلي", "اهلي", "المصرفالاهلي", "اهليعراقي", "Ahli"]):
+    # الاهلي
+    if any(x in text_full for x in ["الاهلي", "اهلي", "المصرفالاهلي", "المصرف الاهلي", "اهليعراقي", "Ahli"]):
         return "المصرف الاهلي"
 
-    if any(x in text.lower() for x in ["tbi", "تيبياي", "التجاريالعراقي", "تجاري"]):
+    # TBI
+    if any(x in text_full.lower() for x in ["tbi", "تيبياي", "التجاريالعراقي", "التجاري العراقي", "تجاري"]):
         return "مصرف TBI"
 
-    if "صناعي" in text:
+    # الصناعي
+    if "صناعي" in text_full or "الصناعي" in text_full:
         return "المصرف الصناعي"
 
-    if "زراعي" in text:
+    # الزراعي
+    if "زراعي" in text_full or "الزراعي" in text_full:
         return "المصرف الزراعي"
 
+    # اذا ما لكه شي، يرجع غير محدد
     return "مصرف غير محدد"
 
 async def fetch_url(url):
@@ -184,7 +191,8 @@ async def check_telegram_channel(channel_username, keywords, display_name):
             return False, "", ""
 
         messages = re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
-        for msg_html in messages[-15:]:
+        # نفحص اخر 20 منشور مو 15
+        for msg_html in messages[-20:]:
             text = re.sub(r'<br/?>', '\n', msg_html)
             text = re.sub(r'<[^>]+>', '', text)
             text = text.strip()
@@ -193,7 +201,7 @@ async def check_telegram_channel(channel_username, keywords, display_name):
                 if keyword in text and is_real_news(text, keyword):
                     bank = extract_bank(text)
                     logger.info(f"خبر {display_name}: {text[:100]} | مصرف: {bank}")
-                    return True, text[:400], bank
+                    return True, text[:500], bank
         return False, "", ""
     except Exception as e:
         logger.error(f"خطأ قراءة قناة {channel_username}: {e}")
@@ -504,7 +512,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V9 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V10 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -580,7 +588,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V9 Pro منع التكرار النهائي")
+    logger.info("✅ البوت شغال - V10 Pro استخراج مصرف محسن")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
