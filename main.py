@@ -500,6 +500,15 @@ async def handle_message(update):
         await bot.send_message(chat_id=ADMIN_ID, text=f"✅ تم تحديث كلمات {source_name}:\n{', '.join(new_keywords)}")
         return
 
+    if update.message.from_user.id == ADMIN_ID and config.get("waiting_bank"):
+        source_name = config["waiting_bank"]
+        config["waiting_bank"] = None
+        new_bank = update.message.text.strip()
+        SALARY_SOURCES[source_name]["BANK_DEFAULT"] = new_bank
+        save_config(config)
+        await bot.send_message(chat_id=ADMIN_ID, text=f"✅ تم تحديث المصرف الافتراضي لـ {source_name}:\n{new_bank}")
+        return
+
     if update.message.from_user.id == ADMIN_ID and config.get("waiting_broadcast"):
         config["waiting_broadcast"] = False
         save_config(config)
@@ -564,7 +573,7 @@ async def handle_callback(update):
         config["dollar_enabled"] = not config["dollar_enabled"]
         save_config(config)
     elif data == "dev_info":
-        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V12 Pro")
+        await bot.send_message(chat_id=ADMIN_ID, text=f"👨‍💻 مطور البوت: {DEV_USERNAME}\n⚙️ اصدار: V12.1 Pro")
         return
     elif data == "dollar_prices":
         buy = config['آخر عملية شراء']
@@ -659,7 +668,7 @@ async def main():
     offset = 0
     last_salary_check = 0
     last_dollar_check = 0
-    logger.info("✅ البوت شغال - V12 Pro وجبة + تنبيه + احصائيات")
+    logger.info("✅ البوت شغال - V12.1 Pro مصلح")
     logger.info(f"CHANNEL_ID: {CHANNEL_ID}")
 
     while True:
@@ -699,7 +708,3 @@ if __name__ == "__main__":
 
     def start_fake_server():
         port = int(os.environ.get('PORT', 10000))
-        HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
-
-    threading.Thread(target=start_fake_server, daemon=True).start()
-    asyncio.run(main())
