@@ -5,6 +5,8 @@ import subprocess
 import requests
 import datetime
 import os
+from threading import Thread
+from flask import Flask
 
 # insert your Telegram bot token here
 bot = telebot.TeleBot('7900965753:AAGEuXB35uqeke536L394xq2U5u-17uF7kc')
@@ -18,7 +20,6 @@ USER_FILE = "users.txt"
 # File to store command logs
 LOG_FILE = "log.txt"
 
-# ضفت هذني لان كانن يطلعن NameError
 FREE_USER_FILE = "free_users.txt"
 free_user_credits = {}
 
@@ -86,7 +87,6 @@ def record_command_logs(user_id, command, target=None, port=None, time=None):
     with open(LOG_FILE, "a") as file:
         file.write(log_entry + "\n")
 
-# Dictionary to store the approval expiry date for each user
 user_approval_expiry = {}
 
 # Function to calculate remaining approval time
@@ -187,7 +187,7 @@ def remove_user(message):
             response = '''Please Specify A User ID to Remove.
 ✅ Usage: /remove <userid>😘'''
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
 
     bot.reply_to(message, response)
 
@@ -206,7 +206,7 @@ def clear_logs_command(message):
         except FileNotFoundError:
             response = "Logs are already cleared ❌."
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=['clearusers'])
@@ -224,7 +224,7 @@ def clear_users_command(message):
         except FileNotFoundError:
             response = "users are already cleared ❌."
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=['allusers'])
@@ -248,7 +248,7 @@ def show_all_users(message):
         except FileNotFoundError:
             response = "No data found ❌"
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=['logs'])
@@ -266,7 +266,7 @@ def show_recent_logs(message):
             response = "No data found ❌"
             bot.reply_to(message, response)
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
         bot.reply_to(message, response)
 
 def start_attack_reply(message, target, port, time):
@@ -419,6 +419,12 @@ def broadcast_message(message):
         response = "Only Admin Can Run This Command 😡."
 
     bot.reply_to(message, response)
+
+app = Flask('')
+@app.route('/')
+def home(): return "Bot is running"
+def run(): app.run(host='0.0.0.0',port=int(os.environ.get('PORT', 10000)))
+Thread(target=run).start()
 
 if __name__ == "__main__":
     bot.delete_webhook()
