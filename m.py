@@ -441,6 +441,8 @@ def broadcast_message(message):
                 user_ids = file.read().splitlines()
                 for user_id in user_ids:
                     try:
+                        bot.delete_webhook()
+bot.polling()
                         bot.send_message(user_id, message_to_broadcast)
                     except Exception as e:
                         print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
