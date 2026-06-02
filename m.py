@@ -429,3 +429,4 @@ Thread(target=run).start()
 if __name__ == "__main__":
     bot.delete_webhook()
     bot.infinity_polling(skip_pending=True)
+    
