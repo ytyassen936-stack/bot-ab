@@ -7,16 +7,16 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 
 # ---------------- CONFIGURATION ----------------
-API_ID = 1234567  # ضع API_ID هنا
-API_HASH = "your_api_hash_here"  # ضع API_HASH هنا
-BOT_TOKEN = "your_bot_token_here"  # توكن البوت
-MAIN_DEV_ID = 123456789  # آيديك
-MAIN_DEV_USERNAME = "your_username"  # يوزرك بدون @
-MUST_JOIN_CHANNEL = "your_channel"  # معرف قناتك بدون @
+API_ID = 30673923  # ضع API_ID هنا
+API_HASH = "2a32a980417aa537e2cb11cf1311eb82"  # ضع API_HASH هنا
+BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"  # توكن البوت
+MAIN_DEV_ID = 7493679412  # آيديك
+MAIN_DEV_USERNAME = "XX7X6"  # يوزرك بدون @
+MUST_JOIN_CHANNEL = "w_3_vv"  # معرف قناتك بدون @
 
 # --- إعدادات البريد الإلكتروني (SMTP) ---
-SENDER_EMAIL = "your_email@gmail.com"  # ايميلك الذي سيرسل منه البوت
-SENDER_PASSWORD = "your_app_password"  # كلمة سر التطبيقات (App Password) من Google
+SENDER_EMAIL = "shdsbam@gmail.com"  # ايميلك الذي سيرسل منه البوت
+SENDER_PASSWORD = "fgyujbho980"  # كلمة سر التطبيقات (App Password) من Google
 
 bot = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_account = Client("user_session", api_id=API_ID, api_hash=API_HASH)
