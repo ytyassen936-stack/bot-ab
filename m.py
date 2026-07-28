@@ -2,7 +2,7 @@ import asyncio
 import os
 from aiohttp import web
 
-# حل مشكلة Python 3.10+ / 3.14 على Render
+# حل مشكلة Event Loop في Python 3.10+ / 3.14
 try:
     asyncio.get_event_loop()
 except RuntimeError:
@@ -18,67 +18,58 @@ from pyrogram.errors import (
     UserAlreadyParticipant, 
     InviteHashExpired, 
     InviteRequestSent, 
-    UserBannedInChannel
+    UserBannedInChannel,
+    MessageNotModified
 )
 
 # ==============================================================================
-# 🔴 1. اكتب البيانات الخاصة بك هنا
+# 🔴 1. المتغيرات الأساسية (تستجلب من البيئة أو تكتب هنا)
 # ==============================================================================
-API_ID = 30277194               # اكتب الـ API_ID الخاص بك هنا
-API_HASH = "c491b2abf1654641536efb798e50cf15"     # اكتب الـ API_HASH الخاص بك هنا
-BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"   # اكتب توكن البوت الخاص بك هنا
-MAIN_ADMIN_ID = 7493679412       # اكتب أيدي حسابك في التليكرام هنا
-DEV_USERNAME = "XX7X6"  # اكتب معرفك بدون علامة @ (مثال: DevUser)
+API_ID = int(os.environ.get("API_ID", "30277194"))          # اكتب الـ API_ID
+API_HASH = os.environ.get("API_HASH", "c491b2abf1654641536efb798e50cf15")    # اكتب الـ API_HASH
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM")  # اكتب BOT_TOKEN
+MAIN_ADMIN_ID = int(os.environ.get("MAIN_ADMIN_ID", "7493679412")) # أيدي حسابك
+DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6") # معرفك بدون @
 
-# إعدادات البريد الإلكتروني المرسل (SMTP)
-SENDER_EMAIL = "shdsbam@gmail.com"      # اكتب البريد الإلكتروني للارسال
-SENDER_PASSWORD = "fgyujbho980" # اكتب كلمة مرور التطبيق (App Password)
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "shdsbam@gmail.com")
+SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "fgyujbho980")
 # ==============================================================================
 
-# قائمة المطورين
 DEV_USERS = [MAIN_ADMIN_ID]
-
-# اشتراكات المستخدمين: {user_id: True}
 USER_SUBSCRIPTIONS = {}
-
-# قائمة الأزرار المخصصة التي يضيفها المطور: [{"text": "...", "url": "..."}]
 CUSTOM_BUTTONS = []
 
-# إعدادات التلغيم والصور
 MINE_CONFIG = {
-    "word": "ا",          # الكلمة/الحرف الافتراضي للتلغيم
-    "mine_photo": None,  # file_id لصورة التلغيم
-    "main_photo": None   # file_id للصورة الأساسية
+    "word": "ا",
+    "mine_photo": None,
+    "main_photo": None
 }
 
 # ---------------- CLIENTS INITIALIZATION ----------------
 user_account = Client("my_account", api_id=API_ID, api_hash=API_HASH)
 bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# حالات الجلسات
 user_states = {}
 
-# ---------------- WEB SERVER (KEEP-ALIVE FOR RENDER & UPTIMEROBOT) ----------------
+# ---------------- WEB SERVER FOR RENDER ----------------
 async def handle_ping(request):
-    return web.Response(text="Bot is running alive 24/7!")
+    return web.Response(text="Bot is running 24/7!")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"🌐 Web Server started on port {port}")
+    print(f"🌐 Web server successfully bound to port {port}")
 
 # ---------------- HELPER FUNCTIONS ----------------
 def is_authorized(user_id):
-    """التحقق هل المستخدم مطور أو يملك اشتراك مفعل"""
     return (user_id in DEV_USERS) or (user_id == MAIN_ADMIN_ID) or (USER_SUBSCRIPTIONS.get(user_id) == True)
 
 def is_dev(user_id):
-    """التحقق هل المستخدم مطور"""
     return (user_id in DEV_USERS) or (user_id == MAIN_ADMIN_ID)
 
 def send_email_smtp(to_email, subject, body):
@@ -101,6 +92,17 @@ def send_email_smtp(to_email, subject, body):
     except Exception as e:
         return False, str(e)
 
+async def safe_edit_text(message_or_query, text, **kwargs):
+    try:
+        if isinstance(message_or_query, CallbackQuery):
+            await message_or_query.message.edit_text(text, **kwargs)
+        else:
+            await message_or_query.edit_text(text, **kwargs)
+    except MessageNotModified:
+        pass
+    except Exception as e:
+        print(f"Edit error: {e}")
+
 # ---------------- KEYBOARDS ----------------
 def main_menu_keyboard(user_id):
     buttons = [
@@ -113,18 +115,15 @@ def main_menu_keyboard(user_id):
         ]
     ]
     
-    # إضافة الأزرار المخصصة المضافة من المطور إن وجدت
     for btn in CUSTOM_BUTTONS:
         buttons.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
 
-    # إذا كان المستخدم مطور يظهر له لوحة المطورين وحالة النظام
     if is_dev(user_id):
         buttons.append([
             InlineKeyboardButton("⚙️ لوحة المطورين", callback_data="dev_panel"),
             InlineKeyboardButton("📊 حالة النظام", callback_data="bot_status")
         ])
 
-    # زر المطور يظهر للجميع في الأسفل
     buttons.append([
         InlineKeyboardButton("developer 🧑‍💻", url=f"https://t.me/{DEV_USERNAME}")
     ])
@@ -170,14 +169,13 @@ async def start_handler(client: Client, message: Message):
     user_states[user_id] = None
 
     if not is_authorized(user_id):
-        # إرسال رسالة ترحيبية مع زر المطور للمستخدم غير المصرح له
         unauthorized_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("developer 🧑‍💻", url=f"https://t.me/{DEV_USERNAME}")]
         ])
         await message.reply_text(
             "🔒 **عذراً، البوت غير مصرح لك باستخدامه!**\n\n"
-            "ليس لديك اشتراك فعال لتشغيل البوت.\n"
-            f"للاشتراك وتفعيل الحساب، يرجى التواصل مع المطور عبر الزر أدناه:",
+            "ليس لديك اشتراك فعال.\n"
+            f"تواصل مع المطور للتفعيل: @{DEV_USERNAME}",
             reply_markup=unauthorized_kb
         )
         return
@@ -202,12 +200,12 @@ async def callback_handler(client: Client, callback: CallbackQuery):
 
     if data == "main_menu":
         user_states[user_id] = None
-        await callback.message.edit_text("⚙️ **القائمة الرئيسية:**", reply_markup=main_menu_keyboard(user_id))
+        await safe_edit_text(callback, "⚙️ **القائمة الرئيسية:**", reply_markup=main_menu_keyboard(user_id))
 
-    # --- مسار السبام ---
     elif data == "spam_flow_start":
         user_states[user_id] = {"step": "SPAM_SUBJECT"}
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback,
             "🚀 **بدء إعداد السبام:**\n\nيرجى إرسال **موضوع السبام** الآن:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
         )
@@ -215,12 +213,12 @@ async def callback_handler(client: Client, callback: CallbackQuery):
     elif data == "stop_spam":
         user_states[user_id] = None
         await callback.answer("🛑 تم إيقاف العمليات!", show_alert=True)
-        await callback.message.edit_text("⏸️ **تم إيقاف العمليات المعلقة.**", reply_markup=main_menu_keyboard(user_id))
+        await safe_edit_text(callback, "⏸️ **تم إيقاف العمليات المعلقة.**", reply_markup=main_menu_keyboard(user_id))
 
-    # --- مسار الهجوم ---
     elif data == "attack_flow_start":
         user_states[user_id] = {"step": "WAIT_GROUP_LINK"}
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback,
             "💣 **بدء الهجوم:**\n\nأرسل رابط المجموعة الآن فقط:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
         )
@@ -230,13 +228,12 @@ async def callback_handler(client: Client, callback: CallbackQuery):
         group_link = user_states.get(user_id, {}).get("group_link")
         
         if not group_link:
-            await callback.message.edit_text("❌ حدث خطأ في الحصول على الرابط، حاول مجدداً.", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(callback, "❌ حدث خطأ في الحصول على الرابط، حاول مجدداً.", reply_markup=main_menu_keyboard(user_id))
             return
 
-        await callback.message.edit_text(f"⏳ **جاري تنفيذ الهجوم للعدد ({count})...**")
+        await safe_edit_text(callback, f"⏳ **جاري تنفيذ الهجوم للعدد ({count})...**")
         
         try:
-            # تغيير صورة التلغيم إن وجدت
             if MINE_CONFIG["mine_photo"]:
                 try:
                     file_path = await bot.download_media(MINE_CONFIG["mine_photo"])
@@ -250,7 +247,6 @@ async def callback_handler(client: Client, callback: CallbackQuery):
                 await user_account.send_message(chat.id, MINE_CONFIG["word"])
                 await asyncio.sleep(0.5)
 
-            # إعادة الصورة الأساسية إن وجدت
             if MINE_CONFIG["main_photo"]:
                 try:
                     file_path = await bot.download_media(MINE_CONFIG["main_photo"])
@@ -259,47 +255,46 @@ async def callback_handler(client: Client, callback: CallbackQuery):
                 except Exception:
                     pass
 
-            await callback.message.edit_text(f"✅ **تم تنفيذ الهجوم بنجاح وصافحت المجموعة {count} مرة! 💣**", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(callback, f"✅ **تم تنفيذ الهجوم بنجاح وصافحت المجموعة {count} مرة! 💣**", reply_markup=main_menu_keyboard(user_id))
         except Exception as e:
-            await callback.message.edit_text(f"❌ **حدث خطأ أثناء الهجوم:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(callback, f"❌ **حدث خطأ أثناء الهجوم:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
 
-    # --- لوحة المطورين ---
     elif data == "dev_panel":
         if not is_dev(user_id):
             await callback.answer("❌ هذه اللوحة مخصصة للمطورين فقط!", show_alert=True)
             return
-        await callback.message.edit_text("⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
+        await safe_edit_text(callback, "⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
 
     elif data == "dev_add_admin":
         if not is_dev(user_id): return
         user_states[user_id] = {"step": "DEV_ADD_ADMIN"}
-        await callback.message.edit_text("👤 أرسل الآن **ايدي (ID)** المطور الجديد:")
+        await safe_edit_text(callback, "👤 أرسل الآن **ايدي (ID)** المطور الجديد:")
 
     elif data == "dev_add_sub":
         if not is_dev(user_id): return
         user_states[user_id] = {"step": "DEV_ADD_SUB_ID"}
-        await callback.message.edit_text("🎟️ أرسل الآن **ايدي (ID)** المستخدم لتفعيل اشتراكه:")
+        await safe_edit_text(callback, "🎟️ أرسل الآن **ايدي (ID)** المستخدم لتفعيل اشتراكه:")
 
     elif data == "dev_set_word":
         if not is_dev(user_id): return
         user_states[user_id] = {"step": "DEV_SET_WORD"}
-        await callback.message.edit_text(f"✏️ الكلمة الحالية: `{MINE_CONFIG['word']}`\n\nأرسل **الكلمة الجديدة** للتلغيم:")
+        await safe_edit_text(callback, f"✏️ الكلمة الحالية: `{MINE_CONFIG['word']}`\n\nأرسل **الكلمة الجديدة** للتلغيم:")
 
     elif data == "dev_set_photos":
         if not is_dev(user_id): return
         user_states[user_id] = {"step": "DEV_SET_MINE_PHOTO"}
-        await callback.message.edit_text("🖼️ قم بإرسال **صورة التلغيم الأولى** الآن بالدردشة:")
+        await safe_edit_text(callback, "🖼️ قم بإرسال **صورة التلغيم الأولى** الآن بالدردشة:")
 
     elif data == "dev_add_button":
         if not is_dev(user_id): return
         user_states[user_id] = {"step": "DEV_ADD_BTN_TEXT"}
-        await callback.message.edit_text("🔘 أرسل الآن **النص/الاسم** الذي سيظهر على الزر:")
+        await safe_edit_text(callback, "🔘 أرسل الآن **النص/الاسم** الذي سيظهر على الزر:")
 
     elif data == "dev_clear_buttons":
         if not is_dev(user_id): return
         CUSTOM_BUTTONS.clear()
         await callback.answer("🗑️ تم مسح جميع الأزرار المخصصة!", show_alert=True)
-        await callback.message.edit_text("⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
+        await safe_edit_text(callback, "⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
 
     elif data == "bot_status":
         if not is_dev(user_id):
@@ -314,7 +309,7 @@ async def callback_handler(client: Client, callback: CallbackQuery):
             f"• الصورة الأساسية: {'مضبوطة ✅' if MINE_CONFIG['main_photo'] else 'غير مضبوطة ❌'}\n"
             "• حالة البوت: 🟢 يعمل بنجاح"
         )
-        await callback.message.edit_text(status_text, reply_markup=main_menu_keyboard(user_id))
+        await safe_edit_text(callback, status_text, reply_markup=main_menu_keyboard(user_id))
 
 # ---------------- MEDIA & MESSAGES PROCESSOR ----------------
 @bot.on_message(filters.private & ~filters.bot)
@@ -339,7 +334,6 @@ async def process_inputs(client: Client, message: Message):
 
     step = state.get("step")
 
-    # --- استقبال الصور للمطور ---
     if step == "DEV_SET_MINE_PHOTO" and message.photo:
         MINE_CONFIG["mine_photo"] = message.photo.file_id
         user_states[user_id] = {"step": "DEV_SET_MAIN_PHOTO"}
@@ -352,7 +346,6 @@ async def process_inputs(client: Client, message: Message):
         await message.reply_text("✅ تم حفظ الصورة الأساسية بنجاح!", reply_markup=dev_panel_keyboard())
         return
 
-    # --- خطوات إضافة الأزرار المخصصة ---
     if step == "DEV_ADD_BTN_TEXT" and message.text:
         user_states[user_id] = {"step": "DEV_ADD_BTN_URL", "btn_text": message.text.strip()}
         await message.reply_text("🔗 ممتاز، الآن أرسل **رابط الزر** (يجب أن يبدأ بـ http:// أو https://):")
@@ -370,7 +363,6 @@ async def process_inputs(client: Client, message: Message):
         await message.reply_text(f"✅ تم إضافة الزر المخصص (`{btn_text}`) بنجاح!", reply_markup=dev_panel_keyboard())
         return
 
-    # --- خطوات السبام ---
     if step == "SPAM_SUBJECT" and message.text:
         user_states[user_id] = {"step": "SPAM_MESSAGE", "subject": message.text.strip()}
         await message.reply_text("✅ تم حفظ الموضوع.\n\nالان يرجى إرسال **نص الرسالة**:")
@@ -404,12 +396,11 @@ async def process_inputs(client: Client, message: Message):
                 if ok: success_count += 1
                 await asyncio.sleep(0.2)
 
-            await wait_msg.edit_text(f"✅ **تم الانتهاء!**\n\n🎯 الهدف: `{target_email}`\n📩 تم إرسال: `{success_count}` / `{count}`")
+            await safe_edit_text(wait_msg, f"✅ **تم الانتهاء!**\n\n🎯 الهدف: `{target_email}`\n📩 تم إرسال: `{success_count}` / `{count}`")
             user_states[user_id] = None
         except ValueError:
             await message.reply_text("⚠️ أدخل أرقام فقط!")
 
-    # --- خطوة رابط الهجوم ---
     elif step == "WAIT_GROUP_LINK" and message.text:
         link = message.text.strip()
         wait_msg = await message.reply_text("⏳ جاري فحص المجموعة والانضمام...")
@@ -417,29 +408,28 @@ async def process_inputs(client: Client, message: Message):
         try:
             await user_account.join_chat(link)
             user_states[user_id] = {"group_link": link}
-            await wait_msg.edit_text("✅ **تم الانضمام!**\n\nاختر الآن **عدد التلغيم**:", reply_markup=attack_count_keyboard())
+            await safe_edit_text(wait_msg, "✅ **تم الانضمام!**\n\nاختر الآن **عدد التلغيم**:", reply_markup=attack_count_keyboard())
 
         except UserBannedInChannel:
             user_states[user_id] = None
-            await wait_msg.edit_text("❌ **الحساب مطرود من المجموعة!**", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(wait_msg, "❌ **الحساب مطرود من المجموعة!**", reply_markup=main_menu_keyboard(user_id))
 
         except InviteRequestSent:
             user_states[user_id] = None
-            await wait_msg.edit_text("⏳ **تم إرسال طلب انضمام، انتظر الموافقة.**", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(wait_msg, "⏳ **تم إرسال طلب انضمام، انتظر الموافقة.**", reply_markup=main_menu_keyboard(user_id))
 
         except UserAlreadyParticipant:
             user_states[user_id] = {"group_link": link}
-            await wait_msg.edit_text("⚠️ **الحساب موجود بالفعل.**\n\nاختر عدد التلغيم:", reply_markup=attack_count_keyboard())
+            await safe_edit_text(wait_msg, "⚠️ **الحساب موجود بالفعل.**\n\nاختر عدد التلغيم:", reply_markup=attack_count_keyboard())
 
         except InviteHashExpired:
             user_states[user_id] = None
-            await wait_msg.edit_text("❌ **الرابط منتهي الصلاحية!**", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(wait_msg, "❌ **الرابط منتهي الصلاحية!**", reply_markup=main_menu_keyboard(user_id))
 
         except Exception as e:
             user_states[user_id] = None
-            await wait_msg.edit_text(f"❌ **حدث خطأ:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
+            await safe_edit_text(wait_msg, f"❌ **حدث خطأ:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
 
-    # --- خطوات المطور ---
     elif step == "DEV_ADD_ADMIN" and message.text:
         try:
             new_dev = int(message.text.strip())
@@ -468,8 +458,11 @@ async def process_inputs(client: Client, message: Message):
 
 # ---------------- MAIN RUNNER ----------------
 async def main():
-    print("⏳ جاري تشغيل البوت والخدمات...")
+    print("⏳ جاري تشغيل سيرفر الويب أولاً لمنع إغلاق Render...")
+    # تشغيل السيرفر قبل أي شيء آخر لتجاوز Port Scan الخاصة بـ Render
     await start_web_server()
+
+    print("⏳ جاري تشغيل البوت الخدمي...")
     await bot.start()
     print("✅ تم تشغيل البوت الخدمي بنجاح!")
 
@@ -477,7 +470,7 @@ async def main():
         await user_account.start()
         print("✅ تم تشغيل الحساب الشخصي!")
     except Exception as e:
-        print(f"⚠️ تنبيه الحساب الشخصي: {e}")
+        print(f"⚠️ تنبيه الحساب الشخصي (تأكد من تسجيل الدخول مسبقاً): {e}")
 
     print("🚀 البوت جاهز للاستخدام ومحمي بالكامل!")
     await asyncio.Event().wait()
@@ -488,4 +481,3 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\n🛑 تم إيقاف البوت.")
-
