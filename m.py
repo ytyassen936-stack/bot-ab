@@ -1,4 +1,12 @@
 import asyncio
+
+# حل مشكلة Python 3.10+ / 3.14 على Render (يجب إنشاؤه قبل استدعاء pyrogram)
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,19 +20,19 @@ from pyrogram.errors import (
 )
 
 # ==============================================================================
-# 🔴 1. المعلومات الأساسية والبريد (املاء البيانات هنا مباشرة)
+# 🔴 1. اكتب البيانات الخاصة بك هنا
 # ==============================================================================
-API_ID = 30277194               # اكتب الـ API_ID الخاص بك
-API_HASH = "c491b2abf1654641536efb798e50cf15"     # اكتب الـ API_HASH الخاص بك
-BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"   # اكتب توكن البوت الخاص بك
+API_ID = 30277194               # اكتب الـ API_ID الخاص بك هنا
+API_HASH = "c491b2abf1654641536efb798e50cf15"     # اكتب الـ API_HASH الخاص بك هنا
+BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"   # اكتب توكن البوت الخاص بك هنا
 MAIN_ADMIN_ID = 7493679412       # اكتب أيدي حسابك في التليكرام هنا
 
 # إعدادات البريد الإلكتروني المرسل (SMTP)
-SENDER_EMAIL = "shdsbam@gmail.com"      # اكتب إيميلك الذي سيرسل البوت منه
+SENDER_EMAIL = "shdsbam@gmail.com"      # اكتب البريد الإلكتروني للارسال
 SENDER_PASSWORD = "fgyujbho980" # اكتب كلمة مرور التطبيق (App Password)
 # ==============================================================================
 
-# قائمة المطورين المعتمدين
+# قائمة المطورين
 DEV_USERS = [MAIN_ADMIN_ID]
 
 # اشتراكات المستخدمين: {user_id: days}
@@ -41,13 +49,13 @@ MINE_CONFIG = {
 user_account = Client("my_account", api_id=API_ID, api_hash=API_HASH)
 bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# حالات الجلسات والمتابعة للمستخدمين
+# حالات الجلسات والمتابعة
 user_states = {}
 
 # ---------------- HELPER FUNCTIONS ----------------
 def send_email_smtp(to_email, subject, body):
     if not SENDER_EMAIL or not SENDER_PASSWORD or "example" in SENDER_EMAIL:
-        return False, "لم يتم ضبط إيميل وباسورد المرسل داخل الكود بشكل صحيح!"
+        return False, "لم يتم ضبط البريد أو كلمة المرور داخل الكود بشكل صحيح!"
     try:
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
@@ -166,19 +174,16 @@ async def callback_handler(client: Client, callback: CallbackQuery):
         await callback.message.edit_text(f"⏳ **جاري تنفيذ الهجوم للعدد ({count})...**")
         
         try:
-            # 1. تغيير الصورة إلى صورة التلغيم
             try:
                 await user_account.set_profile_photo(photo=MINE_CONFIG["mine_photo"])
             except Exception:
                 pass
 
-            # 2. إرسال الكلمة/الحرف
             chat = await user_account.get_chat(group_link)
             for _ in range(count):
                 await user_account.send_message(chat.id, MINE_CONFIG["word"])
                 await asyncio.sleep(0.5)
 
-            # 3. إرجاع الصورة إلى الصورة الأساسية
             try:
                 await user_account.set_profile_photo(photo=MINE_CONFIG["main_photo"])
             except Exception:
@@ -349,7 +354,7 @@ async def process_inputs(client: Client, message: Message):
         await message.reply_text("✅ تم حفظ الصورة الأساسية بنجاح!", reply_markup=dev_panel_keyboard())
         user_states[user_id] = None
 
-# ---------------- MAIN RUNNER FOR RENDER ----------------
+# ---------------- MAIN RUNNER ----------------
 async def main():
     print("⏳ جاري تشغيل البوت والخدمات...")
     await bot.start()
@@ -363,12 +368,10 @@ async def main():
 
     print("🚀 البوت جاهز للاستخدام بنجاح!")
     
-    # إبقاء البوت شغال على سيرفرات Render
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
