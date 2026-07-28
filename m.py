@@ -1,74 +1,53 @@
 import asyncio
-import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import (
+    UserAlreadyParticipant, 
+    InviteHashExpired, 
+    InviteRequestSent, 
+    UserBannedInChannel
+)
 
-# ---------------- CONFIGURATION ----------------
-API_ID = 30673923  # ضع API_ID هنا
-API_HASH = "2a32a980417aa537e2cb11cf1311eb82"  # ضع API_HASH هنا
-BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"  # توكن البوت
-MAIN_DEV_ID = 7493679412  # آيديك
-MAIN_DEV_USERNAME = "XX7X6"  # يوزرك بدون @
-MUST_JOIN_CHANNEL = "w_3_vv"  # معرف قناتك بدون @
+# ==============================================================================
+# 🔴 1. المعلومات الأساسية والبريد (املاء البيانات هنا مباشرة)
+# ==============================================================================
+API_ID = 30277194               # اكتب الـ API_ID الخاص بك
+API_HASH = "c491b2abf1654641536efb798e50cf15"     # اكتب الـ API_HASH الخاص بك
+BOT_TOKEN = "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM"   # اكتب توكن البوت الخاص بك
+MAIN_ADMIN_ID = 7493679412       # اكتب أيدي حسابك في التليكرام هنا
 
-# --- إعدادات البريد الإلكتروني (SMTP) ---
-SENDER_EMAIL = "shdsbam@gmail.com"  # ايميلك الذي سيرسل منه البوت
-SENDER_PASSWORD = "fgyujbho980"  # كلمة سر التطبيقات (App Password) من Google
+# إعدادات البريد الإلكتروني المرسل (SMTP)
+SENDER_EMAIL = "shdsbam@gmail.com"      # اكتب إيميلك الذي سيرسل البوت منه
+SENDER_PASSWORD = "fgyujbho980" # اكتب كلمة مرور التطبيق (App Password)
+# ==============================================================================
 
-bot = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-user_account = Client("user_session", api_id=API_ID, api_hash=API_HASH)
+# قائمة المطورين المعتمدين
+DEV_USERS = [MAIN_ADMIN_ID]
 
-# ---------------- DATA STORE ----------------
-devs_list = [MAIN_DEV_ID]
-custom_buttons = []  # الأزرار الشفافة
-spam_photos = []     # صور التلغيم
-subscriptions = {}   # الاشتراكات
+# اشتراكات المستخدمين: {user_id: days}
+USER_SUBSCRIPTIONS = {}
+
+# إعدادات التلغيم والصور الخاصة بالمطور
+MINE_CONFIG = {
+    "word": "ا",                    # الكلمة/الحرف الافتراضي للتلغيم
+    "mine_photo": "mine_pic.jpg",   # مسار/رابط صورة التلغيم
+    "main_photo": "main_pic.jpg"    # مسار/رابط الصورة الأساسية بعد الانتهاء
+}
+
+# ---------------- CLIENTS INITIALIZATION ----------------
+user_account = Client("my_account", api_id=API_ID, api_hash=API_HASH)
+bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# حالات الجلسات والمتابعة للمستخدمين
 user_states = {}
 
 # ---------------- HELPER FUNCTIONS ----------------
-async def check_sub(client, user_id):
-    try:
-        member = await client.get_chat_member(f"@{MUST_JOIN_CHANNEL}", user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except Exception:
-        return False
-
-def is_subscribed_user(user_id):
-    if user_id in devs_list:
-        return True
-    expire_time = subscriptions.get(user_id, 0)
-    return time.time() < expire_time
-
-def build_main_keyboard(user_id):
-    buttons = []
-    # الأزرار المخصصة المضافة من المطور
-    for btn in custom_buttons:
-        buttons.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
-    
-    # زر الشات التلقائي للإيميلات
-    buttons.append([InlineKeyboardButton("📧 الشات التلقائي", callback_data="auto_chat_email")])
-    
-    # زر المطور الأساسي
-    buttons.append([InlineKeyboardButton("👨‍💻 المطور", url=f"https://t.me/{MAIN_DEV_USERNAME}")])
-    
-    # لوحة المطورين
-    if user_id in devs_list:
-        buttons.append([InlineKeyboardButton("⚙️ لوحة المطور", callback_data="dev_panel")])
-        
-    return InlineKeyboardMarkup(buttons)
-
-async def rotate_photo_if_needed(msg_count):
-    if spam_photos and msg_count > 0 and msg_count % 10 == 0:
-        photo_index = (msg_count // 10) % len(spam_photos)
-        try:
-            await user_account.set_profile_photo(photo=spam_photos[photo_index])
-        except Exception as e:
-            print(f"خطأ في تغيير الصورة: {e}")
-
-def send_email_func(to_email, subject, body):
+def send_email_smtp(to_email, subject, body):
+    if not SENDER_EMAIL or not SENDER_PASSWORD or "example" in SENDER_EMAIL:
+        return False, "لم يتم ضبط إيميل وباسورد المرسل داخل الكود بشكل صحيح!"
     try:
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
@@ -76,191 +55,319 @@ def send_email_func(to_email, subject, body):
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
-        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.send_message(msg)
+        text = msg.as_string()
+        server.sendmail(SENDER_EMAIL, to_email, text)
         server.quit()
-        return True
+        return True, "تم الإرسال بنجاح"
     except Exception as e:
-        print(f"SMTP Error: {e}")
-        return False
+        return False, str(e)
 
-# ---------------- START COMMAND ----------------
+# ---------------- KEYBOARDS ----------------
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚀 بدء السبام", callback_data="spam_flow_start"),
+            InlineKeyboardButton("🛑 إيقاف السبام", callback_data="stop_spam")
+        ],
+        [
+            InlineKeyboardButton("💣 بدء الهجوم", callback_data="attack_flow_start"),
+            InlineKeyboardButton("⚙️ لوحة المطورين", callback_data="dev_panel")
+        ],
+        [
+            InlineKeyboardButton("📊 حالة النظام", callback_data="bot_status")
+        ]
+    ])
+
+def attack_count_keyboard():
+    buttons = []
+    row = []
+    for i in range(1, 11):
+        row.append(InlineKeyboardButton(f"{i}", callback_data=f"set_attack_count_{i}"))
+        if len(row) == 5:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def dev_panel_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("➕ إضافة مطور", callback_data="dev_add_admin"),
+            InlineKeyboardButton("🎟️ إضافة اشتراك", callback_data="dev_add_sub")
+        ],
+        [
+            InlineKeyboardButton("✏️ تغيير كلمة التلغيم", callback_data="dev_set_word"),
+            InlineKeyboardButton("🖼️ ضبط صور التلغيم", callback_data="dev_set_photos")
+        ],
+        [
+            InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")
+        ]
+    ])
+
+# ---------------- BOT HANDLERS ----------------
 @bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
+    user_states[user_id] = None
     
-    if not await check_sub(client, user_id):
-        await message.reply_text(f"⚠️ يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n@{MUST_JOIN_CHANNEL}")
-        return
-
-    await message.reply_text(
-        "أهلاً بك في البوت!\n\n"
-        "• أرسل **تلغيم** للتكرار في التليكرام.\n"
-        "• أرسل **المجموعات** لإدارة المجموعات.\n"
-        "• اضغط على **الشات التلقائي** لإرسال رسائل بريدية متكررة.",
-        reply_markup=build_main_keyboard(user_id)
+    welcome_msg = (
+        f"🙋‍♂️ أهلاً بك يا {message.from_user.mention} في اليوزربوت الشامل!\n\n"
+        "✨ **الخدمات المتاحة:**\n"
+        "• قسم السبام المطور عبر البريد (من 100 إلى 2000 رسالة)\n"
+        "• قسم الهجوم والتلغيم الذكي مع تغيير الصور تلقائياً\n"
+        "• لوحة تحكم كاملة للمطورين والاشتراكات\n\n"
+        "👇 اختر المطلوب من القائمة:"
     )
+    await message.reply_text(welcome_msg, reply_markup=main_menu_keyboard())
 
-# ---------------- AUTO EMAIL CHAT (الشات التلقائي) ----------------
-@bot.on_callback_query(filters.regex("auto_chat_email"))
-async def start_auto_chat(client, callback_query):
-    user_id = callback_query.from_user.id
-    if not is_subscribed_user(user_id):
-        await callback_query.answer("❌ هذا الخيار متاح للمشتركين فقط! تواصل مع المطور للتفعيل.", show_alert=True)
-        return
+@bot.on_callback_query()
+async def callback_handler(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    data = callback.data
 
-    user_states[user_id] = {"step": "email_wait_count"}
-    await callback_query.message.reply_text("📧 **الشات التلقائي عبر البريد الإلكتروني**\n\nأدخل عدد الرسائل المراد إرسالها (من 100 إلى 2000):")
+    if data == "main_menu":
+        user_states[user_id] = None
+        await callback.message.edit_text("⚙️ **القائمة الرئيسية:**", reply_markup=main_menu_keyboard())
 
-# ---------------- USER & DEV HANDLER ----------------
-@bot.on_message(filters.private & ~filters.me)
-async def handle_private_messages(client: Client, message: Message):
-    user_id = message.from_user.id
-    text = message.text
-    state_data = user_states.get(user_id, {})
-    state = state_data.get("step")
+    # --- مسار السبام ---
+    elif data == "spam_flow_start":
+        user_states[user_id] = {"step": "SPAM_SUBJECT"}
+        await callback.message.edit_text(
+            "🚀 **بدء إعداد السبام:**\n\nيرجى إرسال **موضوع السبام** الآن:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
+        )
 
-    # --- خطوات الشات التلقائي عبر البريد ---
-    if state == "email_wait_count":
-        if not text.isdigit() or not (100 <= int(text) <= 2000):
-            await message.reply_text("❌ يرجى إدخال عدد صحيح بين 100 و 2000.")
+    elif data == "stop_spam":
+        user_states[user_id] = None
+        await callback.answer("🛑 تم إيقاف العمليات!", show_alert=True)
+        await callback.message.edit_text("⏸️ **تم إيقاف العمليات المعلقة.**", reply_markup=main_menu_keyboard())
+
+    # --- مسار بدء الهجوم ---
+    elif data == "attack_flow_start":
+        user_states[user_id] = {"step": "WAIT_GROUP_LINK"}
+        await callback.message.edit_text(
+            "💣 **بدء الهجوم:**\n\nأرسل رابط المجموعة الآن فقط (بدون أي كلام إضافي مع الرابط):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
+        )
+
+    elif data.startswith("set_attack_count_"):
+        count = int(data.split("_")[-1])
+        group_link = user_states.get(user_id, {}).get("group_link")
+        
+        if not group_link:
+            await callback.message.edit_text("❌ حدث خطأ في الحصول على الرابط، حاول مجدداً.", reply_markup=main_menu_keyboard())
             return
-        user_states[user_id]["email_count"] = int(text)
-        user_states[user_id]["step"] = "email_wait_target"
-        await message.reply_text("أرسل البريد الإلكتروني المستهدف (المستلم):")
 
-    elif state == "email_wait_target":
-        if "@" not in text or "." not in text:
-            await message.reply_text("❌ يرجى إرسال بريد إلكتروني صحيح.")
-            return
-        user_states[user_id]["target_email"] = text
-        user_states[user_id]["step"] = "email_wait_subject"
-        await message.reply_text("أرسل موضوع الرسالة (Subject):")
-
-    elif state == "email_wait_subject":
-        user_states[user_id]["email_subject"] = text
-        user_states[user_id]["step"] = "email_wait_body"
-        await message.reply_text("أرسل نص الرسالة:")
-
-    elif state == "email_wait_body":
-        email_body = text
-        email_count = state_data.get("email_count")
-        target_email = state_data.get("target_email")
-        email_subject = state_data.get("email_subject")
-
-        await message.reply_text(f"⏳ جاري بدء إرسال {email_count} رسالة بريدية إلى `{target_email}`...")
-
-        success_sent = 0
-        for i in range(1, email_count + 1):
-            loop = asyncio.get_event_loop()
-            res = await loop.run_in_executor(None, send_email_func, target_email, email_subject, email_body)
-            if res:
-                success_sent += 1
-            await asyncio.sleep(0.5)
-
-        user_states[user_id] = {}
-        await message.reply_text(f"✅ تم الانتهاء! تم إرسال {success_sent} من أصل {email_count} رسالة بنجاح.")
-
-    # --- باقي الخطوات السابقة (تلغيم، إدارة المطورين، الخ) ---
-    elif state == "wait_link":
+        await callback.message.edit_text(f"⏳ **جاري تنفيذ الهجوم للعدد ({count})...**")
+        
         try:
-            chat = await user_account.join_chat(text)
-            chat_id = chat.id
-        except Exception:
-            chat_id = text
-        user_states[user_id] = {"step": "wait_count", "chat_id": chat_id}
-        await message.reply_text("ارسل عدد التلغيم (من 1 إلى 100):")
+            # 1. تغيير الصورة إلى صورة التلغيم
+            try:
+                await user_account.set_profile_photo(photo=MINE_CONFIG["mine_photo"])
+            except Exception:
+                pass
 
-    elif state == "wait_count":
-        if not text.isdigit() or not (1 <= int(text) <= 100):
-            await message.reply_text("الرجاء إدخال عدد بين 1 و 100.")
+            # 2. إرسال الكلمة/الحرف
+            chat = await user_account.get_chat(group_link)
+            for _ in range(count):
+                await user_account.send_message(chat.id, MINE_CONFIG["word"])
+                await asyncio.sleep(0.5)
+
+            # 3. إرجاع الصورة إلى الصورة الأساسية
+            try:
+                await user_account.set_profile_photo(photo=MINE_CONFIG["main_photo"])
+            except Exception:
+                pass
+
+            await callback.message.edit_text(f"✅ **تم تنفيذ الهجوم بنجاح وصافحت المجموعة {count} مرة! 💣**", reply_markup=main_menu_keyboard())
+        except Exception as e:
+            await callback.message.edit_text(f"❌ **حدث خطأ أثناء تنفيذ الهجوم:**\n`{e}`", reply_markup=main_menu_keyboard())
+
+    # --- لوحة المطورين ---
+    elif data == "dev_panel":
+        if user_id not in DEV_USERS and user_id != MAIN_ADMIN_ID:
+            await callback.answer("❌ هذه اللوحة مخصصة للمطورين فقط!", show_alert=True)
             return
-        count = int(text)
-        chat_id = state_data.get("chat_id")
-        await message.reply_text(f"⏳ جاري بدء الإرسال ({count} رسالة)...")
+        await callback.message.edit_text("⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
 
-        for i in range(1, count + 1):
-            await user_account.send_message(chat_id, "ا")
-            await rotate_photo_if_needed(i)
-            await asyncio.sleep(0.3)
+    elif data == "dev_add_admin":
+        if user_id not in DEV_USERS and user_id != MAIN_ADMIN_ID: return
+        user_states[user_id] = {"step": "DEV_ADD_ADMIN"}
+        await callback.message.edit_text("👤 أرسل الآن **ايدي (ID)** المطور الجديد لإضافته:")
 
-        user_states[user_id] = {}
-        await message.reply_text("✅ اكتملت العملية بنجاح!")
+    elif data == "dev_add_sub":
+        if user_id not in DEV_USERS and user_id != MAIN_ADMIN_ID: return
+        user_states[user_id] = {"step": "DEV_ADD_SUB_ID"}
+        await callback.message.edit_text("🎟️ أرسل الآن **ايدي (ID)** المستخدم لإعطائه اشتراك:")
 
-    elif state == "wait_dev_photo" and message.photo and user_id in devs_list:
-        photo_path = await message.download()
-        spam_photos.append(photo_path)
-        user_states[user_id] = {}
-        await message.reply_text(f"✅ تم إضافة الصورة! الإجمالي: {len(spam_photos)}")
+    elif data == "dev_set_word":
+        if user_id not in DEV_USERS and user_id != MAIN_ADMIN_ID: return
+        user_states[user_id] = {"step": "DEV_SET_WORD"}
+        await callback.message.edit_text(f"✏️ الكلمة الحالية: `{MINE_CONFIG['word']}`\n\nأرسل **الكلمة/الحرف الجديد** للتلغيم:")
 
-    elif state == "wait_add_dev" and user_id in devs_list:
-        devs_list.append(int(text))
-        user_states[user_id] = {}
-        await message.reply_text("✅ تم إضافة المطور بنجاح.")
+    elif data == "dev_set_photos":
+        if user_id not in DEV_USERS and user_id != MAIN_ADMIN_ID: return
+        user_states[user_id] = {"step": "DEV_SET_MINE_PHOTO"}
+        await callback.message.edit_text("🖼️ أرسل مسار أو رابط **صورة التلغيم** الجديدة:")
 
-    elif state == "wait_sub_id" and user_id in devs_list:
-        user_states[user_id] = {"step": "wait_sub_days", "sub_target": int(text)}
-        await message.reply_text("أدخل عدد أيام الاشتراك:")
+    elif data == "bot_status":
+        status_text = (
+            "📊 **حالة النظام واليوزربوت:**\n\n"
+            f"• إيميل المرسل: `{SENDER_EMAIL}`\n"
+            f"• كلمة التلغيم الحالية: `{MINE_CONFIG['word']}`\n"
+            f"• عدد المطورين: `{len(DEV_USERS)}`\n"
+            f"• عدد المشتركين: `{len(USER_SUBSCRIPTIONS)}`\n"
+            "• حالة البوت: 🟢 يعمل بنجاح"
+        )
+        await callback.message.edit_text(status_text, reply_markup=main_menu_keyboard())
 
-    elif state == "wait_sub_days" and user_id in devs_list:
-        target = state_data.get("sub_target")
-        subscriptions[target] = time.time() + (int(text) * 86400)
-        user_states[user_id] = {}
-        await message.reply_text(f"✅ تم تفعيل الاشتراك للمستخدم `{target}`.")
+# ---------------- MESSAGES PROCESSOR (STATES) ----------------
+@bot.on_message(filters.private & filters.text & ~filters.bot)
+async def process_inputs(client: Client, message: Message):
+    user_id = message.from_user.id
+    state = user_states.get(user_id)
 
-    elif state == "wait_button_text" and user_id in devs_list:
-        user_states[user_id] = {"step": "wait_button_url", "btn_text": text}
-        await message.reply_text("أرسل رابط الزر:")
-
-    elif state == "wait_button_url" and user_id in devs_list:
-        custom_buttons.append({"text": state_data.get("btn_text"), "url": text})
-        user_states[user_id] = {}
-        await message.reply_text("✅ تم إضافة الزر الشفاف بنجاح!")
-
-# ---------------- DEVELOPER PANEL ----------------
-@bot.on_callback_query(filters.regex("dev_panel"))
-async def dev_panel_handler(client, callback_query):
-    if callback_query.from_user.id not in devs_list:
+    if not state or not isinstance(state, dict):
         return
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ إضافة مطور", callback_data="dev_add_dev")],
-        [InlineKeyboardButton("💳 إضافة اشتراك لمستخدم", callback_data="dev_add_sub")],
-        [InlineKeyboardButton("🖼️ إضافة صورة تلغيم", callback_data="dev_add_photo")],
-        [InlineKeyboardButton("🔘 إضافة زر شفاف", callback_data="dev_add_button")],
-        [InlineKeyboardButton("👨‍💻 حساب المطور", url=f"https://t.me/{MAIN_DEV_USERNAME}")]
-    ])
-    await callback_query.message.edit_text("⚙️ **لوحة التحكم المتقدمة للمطور**", reply_markup=keyboard)
+    step = state.get("step")
 
-@bot.on_callback_query(filters.regex("dev_add_dev"))
-async def cb_add_dev(client, callback_query):
-    user_states[callback_query.from_user.id] = {"step": "wait_add_dev"}
-    await callback_query.message.reply_text("أرسل آيدي المطور الجديد:")
+    # --- خطوات السبام ---
+    if step == "SPAM_SUBJECT":
+        user_states[user_id] = {"step": "SPAM_MESSAGE", "subject": message.text.strip()}
+        await message.reply_text("✅ تم حفظ الموضوع.\n\nالان يرجى إرسال **نص الرسالة**:")
 
-@bot.on_callback_query(filters.regex("dev_add_sub"))
-async def cb_add_sub(client, callback_query):
-    user_states[callback_query.from_user.id] = {"step": "wait_sub_id"}
-    await callback_query.message.reply_text("أرسل آيدي المستخدم المراد تفعيل الاشتراك له:")
+    elif step == "SPAM_MESSAGE":
+        user_states[user_id]["body"] = message.text.strip()
+        user_states[user_id]["step"] = "SPAM_EMAIL"
+        await message.reply_text("✅ تم حفظ النص.\n\nالان يرجى إرسال **البريد الإلكتروني المستهدف**:")
 
-@bot.on_callback_query(filters.regex("dev_add_photo"))
-async def cb_add_photo(client, callback_query):
-    user_states[callback_query.from_user.id] = {"step": "wait_dev_photo"}
-    await callback_query.message.reply_text("أرسل صورة جديدة لإضافتها لقائمة الصور:")
+    elif step == "SPAM_EMAIL":
+        user_states[user_id]["target_email"] = message.text.strip()
+        user_states[user_id]["step"] = "SPAM_COUNT"
+        await message.reply_text("✅ تم حفظ البريد.\n\nأدخل **عدد رسائل السبام** المطلوب (أقل شيء **100** وأكثر شيء **2000**):")
 
-@bot.on_callback_query(filters.regex("dev_add_button"))
-async def cb_add_button(client, callback_query):
-    user_states[callback_query.from_user.id] = {"step": "wait_button_text"}
-    await callback_query.message.reply_text("أرسل عنوان الزر الشفاف الجديد:")
+    elif step == "SPAM_COUNT":
+        try:
+            count = int(message.text.strip())
+            if count < 100 or count > 2000:
+                await message.reply_text("⚠️ يرجى إدخال عدد صحيح بين 100 و 2000 رسالة!")
+                return
+            
+            subject = user_states[user_id]["subject"]
+            body = user_states[user_id]["body"]
+            target_email = user_states[user_id]["target_email"]
+            
+            wait_msg = await message.reply_text(f"⏳ جاري بدء إرسال ({count}) رسالة سبام إلى `{target_email}`...")
+            
+            success_count = 0
+            for i in range(count):
+                ok, err = send_email_smtp(target_email, subject, body)
+                if ok:
+                    success_count += 1
+                await asyncio.sleep(0.2)
 
-# ---------------- RUN BOT ----------------
+            await wait_msg.edit_text(f"✅ **تم الانتهاء من عملية السبام!**\n\n🎯 الإيميل الهدف: `{target_email}`\n📩 تم إرسال: `{success_count}` من أصل `{count}` رسالة.")
+            user_states[user_id] = None
+        except ValueError:
+            await message.reply_text("⚠️ يرجى إدخال رقم صحيح فقط!")
+
+    # --- خطوة استقبال رابط الهجوم ---
+    elif step == "WAIT_GROUP_LINK":
+        link = message.text.strip()
+        wait_msg = await message.reply_text("⏳ جاري فحص المجموعة والانضمام...")
+
+        try:
+            await user_account.join_chat(link)
+            user_states[user_id] = {"group_link": link}
+            await wait_msg.edit_text("✅ **تم الانضمام إلى المجموعة!**\n\nاختر الآن **عدد التلغيم** المطلوب تنفيذها:", reply_markup=attack_count_keyboard())
+
+        except UserBannedInChannel:
+            user_states[user_id] = None
+            await wait_msg.edit_text("❌ **الحساب مطرود من هذه المجموعة!**", reply_markup=main_menu_keyboard())
+
+        except InviteRequestSent:
+            user_states[user_id] = None
+            await wait_msg.edit_text("⏳ **انتظر لحد ما يوافقون على طلب الانضمام...**", reply_markup=main_menu_keyboard())
+
+        except UserAlreadyParticipant:
+            user_states[user_id] = {"group_link": link}
+            await wait_msg.edit_text("⚠️ **الحساب موجود بالفعل بالجروب.**\n\nاختر عدد التلغيم مباشرة:", reply_markup=attack_count_keyboard())
+
+        except InviteHashExpired:
+            user_states[user_id] = None
+            await wait_msg.edit_text("❌ **الرابط غير صالح أو منتهي الصلاحية!**", reply_markup=main_menu_keyboard())
+
+        except Exception as e:
+            user_states[user_id] = None
+            await wait_msg.edit_text(f"❌ **حدث خطأ:**\n`{e}`", reply_markup=main_menu_keyboard())
+
+    # --- خطوات إعدادات المطور ---
+    elif step == "DEV_ADD_ADMIN":
+        try:
+            new_dev = int(message.text.strip())
+            if new_dev not in DEV_USERS:
+                DEV_USERS.append(new_dev)
+                await message.reply_text(f"✅ تم إضافة المطور بنجاح: `{new_dev}`", reply_markup=dev_panel_keyboard())
+            else:
+                await message.reply_text("⚠️ هذا المستخدم مطور بالفعل!", reply_markup=dev_panel_keyboard())
+        except ValueError:
+            await message.reply_text("❌ يرجى إرسال ايدي أرقام فقط!")
+        user_states[user_id] = None
+
+    elif step == "DEV_ADD_SUB_ID":
+        user_states[user_id] = {"step": "DEV_ADD_SUB_DAYS", "sub_id": message.text.strip()}
+        await message.reply_text("🎟️ أدخل الآن **عدد أيام الاشتراك**:")
+
+    elif step == "DEV_ADD_SUB_DAYS":
+        try:
+            target_sub = int(user_states[user_id]["sub_id"])
+            days = int(message.text.strip())
+            USER_SUBSCRIPTIONS[target_sub] = days
+            await message.reply_text(f"✅ تم إضافة اشتراك للمستخدم `{target_sub}` لمدة `{days}` يوم!", reply_markup=dev_panel_keyboard())
+        except ValueError:
+            await message.reply_text("❌ يرجى كتابة أرقام صحيحة فقط!")
+        user_states[user_id] = None
+
+    elif step == "DEV_SET_WORD":
+        MINE_CONFIG["word"] = message.text.strip()
+        await message.reply_text(f"✅ تم تغيير كلمة التلغيم إلى: `{MINE_CONFIG['word']}`", reply_markup=dev_panel_keyboard())
+        user_states[user_id] = None
+
+    elif step == "DEV_SET_MINE_PHOTO":
+        MINE_CONFIG["mine_photo"] = message.text.strip()
+        user_states[user_id] = {"step": "DEV_SET_MAIN_PHOTO"}
+        await message.reply_text("✅ تم حفظ صورة التلغيم.\n\nالان أرسل مسار/رابط **الصورة الأساسية** بعد التلغيم:")
+
+    elif step == "DEV_SET_MAIN_PHOTO":
+        MINE_CONFIG["main_photo"] = message.text.strip()
+        await message.reply_text("✅ تم حفظ الصورة الأساسية بنجاح!", reply_markup=dev_panel_keyboard())
+        user_states[user_id] = None
+
+# ---------------- MAIN RUNNER ----------------
 async def main():
+    print("⏳ جاري تشغيل البوت والخدمات...")
     await bot.start()
-    await user_account.start()
-    print("🤖 البوت يعمل بنجاح ومزود بجميع الميزات الشاملة!")
-    await asyncio.Event().wait()
+    print("✅ تم تشغيل البوت الخدمي بنجاح!")
+
+    try:
+        await user_account.start()
+        print("✅ تم تشغيل الحساب الشخصي!")
+    except Exception as e:
+        print(f"⚠️ تنبيه الحساب الشخصي: {e}")
+
+    print("🚀 البوت جاهز للاستخدام بنجاح!")
+    
+    while True:
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 تم إيقاف البوت.")
