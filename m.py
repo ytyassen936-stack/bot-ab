@@ -349,7 +349,7 @@ async def process_inputs(client: Client, message: Message):
         await message.reply_text("✅ تم حفظ الصورة الأساسية بنجاح!", reply_markup=dev_panel_keyboard())
         user_states[user_id] = None
 
-# ---------------- MAIN RUNNER ----------------
+# ---------------- MAIN RUNNER FOR RENDER ----------------
 async def main():
     print("⏳ جاري تشغيل البوت والخدمات...")
     await bot.start()
@@ -363,11 +363,14 @@ async def main():
 
     print("🚀 البوت جاهز للاستخدام بنجاح!")
     
-    while True:
-        await asyncio.sleep(1)
+    # إبقاء البوت شغال على سيرفرات Render
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\n🛑 تم إيقاف البوت.")
+
