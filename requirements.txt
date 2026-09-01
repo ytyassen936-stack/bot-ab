@@ -1,6 +1,5 @@
-telethon==1.36.0
-ntgcalls==1.1.0
-py-tgcalls==1.2.8
+telethon
+py-tgcalls
 tgcrypto
 flask
 waitress
