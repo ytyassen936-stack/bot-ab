@@ -6,10 +6,9 @@ from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 
-# مكتبة تشغيل الصوت في المكالمات الجماعية
+# مكتبة تشغيل الصوت في المكالمات الجماعية (المسارات المحدثة والمستقرة)
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioQuality
-from pytgcalls.types.input_stream import AudioPiped
+from pytgcalls.types import MediaStream
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))            # API_ID الخاص بك
@@ -204,7 +203,7 @@ async def start_voice_training(event):
         # الانضمام للمكالمة الصوتية المفتوحة داخل الكروب
         await call_py.join_group_call(
             chat_id,
-            AudioPiped(file_to_play, AudioQuality.HIGH)
+            MediaStream(file_to_play, video_flags=MediaStream.Flags.IGNORE)
         )
 
         await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ قراءة الصوتيات في الاتصال!** 🎙️")
