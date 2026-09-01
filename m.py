@@ -81,7 +81,9 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 active_sessions = {}
-processed_msg_ids = set()
+
+# 🛑 ذاكرة مانع التكرار ومنع المعالجة المزدوجة 🛑
+PROCESSED_MESSAGES = set()
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
@@ -328,31 +330,27 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة - طريقة خفيفة وموثوقة ] ====================
+# ==================== [ استجابة الدردشة - طريقة خفيفة وموثوقة محصنة ضد التكرار ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
     if not event.text:
         return
 
+    # 🛑 حظر التكرار فوراً برقم ID الرسالة + الكروب 🛑
+    unique_msg_id = f"{event.chat_id}_{event.id}"
+    if unique_msg_id in PROCESSED_MESSAGES:
+        return
+    PROCESSED_MESSAGES.add(unique_msg_id)
+
+    # تنظيف الذاكرة المؤقتة كل فترة لتجنب التضخم
+    if len(PROCESSED_MESSAGES) > 5000:
+        PROCESSED_MESSAGES.clear()
+
     chat_id = event.chat_id
     sess = active_sessions.get(chat_id)
     if not sess:
         return
-
-    # تجاهل رسائل البوت لمنع التكرار الذاتي
-    me = await bot.get_me()
-    if event.sender_id == me.id:
-        return
-
-    # منع تكرار معالجة الرسالة الواحدة
-    msg_key = f"{chat_id}_{event.id}"
-    if msg_key in processed_msg_ids:
-        return
-    processed_msg_ids.add(msg_key)
-
-    if len(processed_msg_ids) > 1000:
-        processed_msg_ids.clear()
 
     lock = sess["lock"]
     async with lock:
@@ -729,4 +727,3 @@ def run_bot_safe():
 
 if __name__ == "__main__":
     run_bot_safe()
-
