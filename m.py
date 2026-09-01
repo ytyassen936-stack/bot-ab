@@ -9,7 +9,7 @@ from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
-from telethon.errors import MessageNotModifiedError
+from telethon.errors import MessageNotModifiedError, FloodWaitError
 
 # ==================== [ استدعاء ذكي لـ PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
@@ -47,7 +47,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5w
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-bot = TelegramClient("VoiceTrainingBot", API_ID, API_HASH)
+bot = TelegramClient("voice_bot_session", API_ID, API_HASH)
 
 # ==================== [ قاعدة البيانات والذاكرة المؤقتة ] ====================
 DATA_FILE = "bot_database.json"
@@ -298,7 +298,7 @@ async def play_current_voice(chat_id):
         except Exception:
             pass
 
-# ==================== [ استجابة الدردشة الفردية والتحقق من الإجابة ] ====================
+# ==================== [ استجابة الدردشة والتحقق مع مانع التكرار الصارم ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -307,42 +307,44 @@ async def handle_group_chat_trigger(event):
 
     chat_id = event.chat_id
     sess = active_sessions.get(chat_id)
-    if not sess or sess.get("is_processing"):
+    if not sess:
         return
 
-    queue = sess["queue"]
-    idx = sess["index"]
+    # استخدام Asyncio Lock يمنع المعالجة المتوازية تماماً
+    lock = sess["lock"]
+    async with lock:
+        queue = sess["queue"]
+        idx = sess["index"]
 
-    if idx >= len(queue):
-        return
+        if idx >= len(queue):
+            return
 
-    target_item = queue[idx]
-    target_text = target_item.get("text", "")
-    if not target_text:
-        return
+        target_item = queue[idx]
+        target_text = target_item.get("text", "")
+        if not target_text:
+            return
 
-    raw_text = event.text.strip()
-    norm_single = normalize_text(raw_text)
-    norm_target = normalize_text(target_text)
+        raw_text = event.text.strip()
+        norm_single = normalize_text(raw_text)
+        norm_target = normalize_text(target_text)
 
-    digits_single = extract_numbers(raw_text)
-    digits_target = extract_numbers(target_text)
+        digits_single = extract_numbers(raw_text)
+        digits_target = extract_numbers(target_text)
 
-    matched = False
+        matched = False
 
-    if norm_target and (norm_target == norm_single or norm_target in norm_single):
-        matched = True
-
-    if not matched and digits_target and digits_single:
-        if digits_target == digits_single or digits_target in digits_single:
+        if norm_target and (norm_target == norm_single or norm_target in norm_single):
             matched = True
 
-    if matched:
-        sess["is_processing"] = True  # قفل المعالجة لمنع تكرار الرد
-        await event.reply("يمك نقطه")
-        sess["index"] += 1
-        await play_current_voice(chat_id)
-        sess["is_processing"] = False # فتح القفل للفويس التالي
+        if not matched and digits_target and digits_single:
+            if digits_target == digits_single or digits_target in digits_single:
+                matched = True
+
+        if matched:
+            # زيادة المؤشر داخل القفل لمنع باقي الرسائل المزدوجة من التفقد
+            sess["index"] += 1
+            await event.reply("يمك نقطه")
+            await play_current_voice(chat_id)
 
 # ==================== [ معالجة مدخلات الخاص للمطور ] ====================
 
@@ -600,7 +602,7 @@ async def callback_handler(event):
                     "index": 0,
                     "provider_name": p_name,
                     "category_name": category_ar,
-                    "is_processing": False
+                    "lock": asyncio.Lock()  # قفل لتجنب التكرار المتوازي
                 }
 
                 await play_current_voice(chat_id)
@@ -611,11 +613,24 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ التشغيل الأساسي المستقر ] ====================
+# ==================== [ التشغيل الأساسي المستقر لمعالجة FloodWait ] ====================
+
+def run_bot_safe():
+    print("🚀 جاري تشغيل البوت...")
+    while True:
+        try:
+            bot.start(bot_token=BOT_TOKEN)
+            print("✅ تم اتصال البوت بنجاح ويستقبل الرسائل الان!")
+            bot.run_until_disconnected()
+            break
+        except FloodWaitError as e:
+            print(f"⚠️ تليجرام فرض انتظار لمدة {e.seconds} ثانية (FloodWaitError)...")
+            import time
+            time.sleep(e.seconds + 5)
+        except Exception as e:
+            print(f"❌ خطأ غير متوقع: {e}")
+            import time
+            time.sleep(10)
 
 if __name__ == "__main__":
-    print("🚀 جاري تشغيل البوت...")
-    bot.start(bot_token=BOT_TOKEN)
-    print("✅ تم اتصال البوت بنجاح ويستقبل الرسائل الان!")
-    bot.run_until_disconnected()
-
+    run_bot_safe()
