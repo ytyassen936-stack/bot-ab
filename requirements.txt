@@ -2,3 +2,4 @@ telethon==1.36.0
 py-tgcalls==2.0.0
 tgcrypto
 ffmpeg-python
+aiohttp
