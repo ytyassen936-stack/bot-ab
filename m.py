@@ -38,12 +38,14 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     serve(app, host="0.0.0.0", port=port)
 
-threading.Thread(target=run_web_server, daemon=True).start()
+# تشغيل خادم الويب بخيط منعزل مرة واحدة فقط
+server_thread = threading.Thread(target=run_web_server, daemon=True)
+server_thread.start()
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8436050842:AAG4EDMXSmXZqKfPuCqgB06NhqdlQR8V9e0")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -81,8 +83,6 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 active_sessions = {}
-
-# 🛑 ذاكرة مانع التكرار ومنع المعالجة المزدوجة 🛑
 PROCESSED_MESSAGES = set()
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
@@ -330,21 +330,20 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة - طريقة خفيفة وموثوقة محصنة ضد التكرار ] ====================
+# ==================== [ استجابة الدردشة - طريقة محصنة من التكرار ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
     if not event.text:
         return
 
-    # 🛑 حظر التكرار فوراً برقم ID الرسالة + الكروب 🛑
-    unique_msg_id = f"{event.chat_id}_{event.id}"
-    if unique_msg_id in PROCESSED_MESSAGES:
+    # قفل معرف الرسالة فوراً لمنع تكرار الرد التلقائي
+    msg_id_key = (event.chat_id, event.id)
+    if msg_id_key in PROCESSED_MESSAGES:
         return
-    PROCESSED_MESSAGES.add(unique_msg_id)
+    PROCESSED_MESSAGES.add(msg_id_key)
 
-    # تنظيف الذاكرة المؤقتة كل فترة لتجنب التضخم
-    if len(PROCESSED_MESSAGES) > 5000:
+    if len(PROCESSED_MESSAGES) > 2000:
         PROCESSED_MESSAGES.clear()
 
     chat_id = event.chat_id
@@ -708,22 +707,13 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ التشغيل الأساسي ومعالجة FloodWait ] ====================
-
-def run_bot_safe():
-    print("🚀 جاري تشغيل البوت...")
-    while True:
-        try:
-            bot.start(bot_token=BOT_TOKEN)
-            print("✅ تم اتصال البوت بنجاح ويستقبل الرسائل الان!")
-            bot.run_until_disconnected()
-            break
-        except FloodWaitError as e:
-            print(f"⚠️ تليجرام فرض انتظار لمدة {e.seconds} ثانية (FloodWaitError)...")
-            time.sleep(e.seconds + 5)
-        except Exception as e:
-            print(f"❌ خطأ غير متوقع: {e}")
-            time.sleep(10)
+# ==================== [ التشغيل المباشر والأمن ] ====================
 
 if __name__ == "__main__":
-    run_bot_safe()
+    print("🚀 جاري تشغيل البوت...")
+    try:
+        bot.start(bot_token=BOT_TOKEN)
+        print("✅ تم اتصال البوت بنجاح ويستقبل الرسائل الان!")
+        bot.run_until_disconnected()
+    except Exception as e:
+        print(f"❌ خطأ: {e}")
