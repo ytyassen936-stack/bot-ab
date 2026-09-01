@@ -1,6 +1,5 @@
-telethon==1.36.0
-py-tgcalls==2.0.0
-ntgcalls==1.1.2
+telethon
+py-tgcalls
 tgcrypto
 ffmpeg-python
 flask
