@@ -9,9 +9,20 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
 
-# الاستدعاء المباشر والمستقر لـ pytgcalls v1.2.8
+# ==================== [ استدعاء ذكي لمنع ImportError ] ====================
 from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
+
+AudioStreamClass = None
+try:
+    from pytgcalls.types import AudioPiped as AudioStreamClass
+except ImportError:
+    try:
+        from pytgcalls.types.input_stream import AudioPiped as AudioStreamClass
+    except ImportError:
+        try:
+            from pytgcalls.types import MediaStream as AudioStreamClass
+        except ImportError:
+            pass
 
 # ==================== [ خادم الويب لـ Render ] ====================
 app = Flask(__name__)
@@ -24,13 +35,12 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     serve(app, host="0.0.0.0", port=port)
 
-# تشغيل خادم الويب في خلفية مستقلة لمنع إغلاق السيرفر
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8436050842:AAFkoQf8a31lj-5OrHMu7apiXFC3Dqc02ds")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -68,7 +78,7 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 
-# ==================== [ لوحات التحكم والأزرار الشفافة ] ====================
+# ==================== [ الأزرار واللوحات ] ====================
 
 def get_dev_link():
     dev_user = db.get("dev_username", DEV_USERNAME).replace("@", "")
@@ -181,7 +191,7 @@ async def activate_group(event):
     ]
     await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nقم بفتح الاتصال الصوتي أولاً ثم أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
 
-# ==================== [ تشغيل الصوت في الاتصال ] ====================
+# ==================== [ تشغيل الصوت متوافق ديناميكياً ] ====================
 
 @bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
 async def start_voice_training(event):
@@ -217,10 +227,13 @@ async def start_voice_training(event):
         call_py = PyTgCalls(assistant)
         await call_py.start()
 
-        await call_py.join_group_call(
-            chat_id,
-            AudioPiped(file_to_play)
-        )
+        stream = AudioStreamClass(file_to_play)
+
+        # التوافق التلقائي مع دوال الانضمام المختلفة
+        if hasattr(call_py, 'join_group_call'):
+            await call_py.join_group_call(chat_id, stream)
+        elif hasattr(call_py, 'play'):
+            await call_py.play(chat_id, stream)
 
         await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ التشغيل!** 🎙️")
 
@@ -463,7 +476,7 @@ async def callback_handler(event):
             buttons = []
             for p_id, p_data in db["providers"].items():
                 buttons.append([Button.inline(f"❌ {p_data.get('name', p_id)}", data=f"del_prov_{p_id}")])
-            buttons.append([Button.inline("🔙 رجوع", data="provider_settings")] )
+            buttons.append([Button.inline("🔙 رجوع", data="provider_settings")])
             await event.edit("🗑️ اختر المقدم المراد حذفه:", buttons=buttons)
         elif data.startswith("del_prov_") and user_id in db["developers"]:
             p_id = data.split("_")[2]
