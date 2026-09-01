@@ -10,7 +10,8 @@ from telethon.sessions import StringSession
 
 # مكتبة تشغيل الصوت في المكالمات الجماعية
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream
+from pytgcalls.types import Stream
+from pytgcalls.types.input_stream import AudioPiped
 
 # ==================== [ خادم الويب لـ Render ] ====================
 app = Flask(__name__)
@@ -156,7 +157,6 @@ async def activate_group(event):
     chat_id = event.chat_id
     user_id = event.sender_id
 
-    # التأكد من صلاحيات المشرف أو المطور
     is_admin = False
     if user_id in db["developers"]:
         is_admin = True
@@ -219,7 +219,7 @@ async def start_voice_training(event):
 
         await call_py.join_group_call(
             chat_id,
-            MediaStream(file_to_play)
+            AudioPiped(file_to_play)
         )
 
         await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ التشغيل!** 🎙️")
