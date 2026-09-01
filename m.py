@@ -80,7 +80,7 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 active_sessions = {}
-handled_messages = set()  # ذاكرة لمنع تكرار الرد على نفس الرسالة
+handled_messages = set()
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
@@ -327,7 +327,7 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة والمقارنة - بدون تكرار ] ====================
+# ==================== [ استجابة الدردشة والمقارنة - حماية تامة من التكرار ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -339,13 +339,12 @@ async def handle_group_chat_trigger(event):
     if not sess:
         return
 
-    # 🛑 حماية من التكرار 3 مرات: التأكد أن الرسالة لم تُعالج سابقاً
+    # 🛑 قفل حاسم: منع معالجة المعرّف نفسه أكثر من مرة
     msg_key = (chat_id, event.id)
     if msg_key in handled_messages:
         return
     handled_messages.add(msg_key)
 
-    # تنظيف الذاكرة بشكل مجدول للحفاظ على السرعة
     if len(handled_messages) > 1000:
         handled_messages.clear()
 
@@ -382,6 +381,7 @@ async def handle_group_chat_trigger(event):
             sess["index"] += 1
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
+            raise events.StopPropagation
 
 # ==================== [ معالجة المدخلات والحذف ] ====================
 
@@ -631,7 +631,6 @@ async def callback_handler(event):
             p_id = data.split("_")[2]
             if p_id in db["providers"]:
                 p_name = db["providers"][p_id].get("name", p_id)
-                # حذف ملفات فويسات هذا المقدم من القرص
                 for cat in ["numbers", "words", "random"]:
                     for item in db["providers"][p_id].get("voices", {}).get(cat, []):
                         if os.path.exists(item.get("file", "")):
@@ -702,7 +701,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ التشغيل الأساسي المستقر ومعالجة FloodWait ] ====================
+# ==================== [ التشغيل الأساسي ومعالجة FloodWait ] ====================
 
 def run_bot_safe():
     print("🚀 جاري تشغيل البوت...")
@@ -723,4 +722,3 @@ def run_bot_safe():
 
 if __name__ == "__main__":
     run_bot_safe()
-
