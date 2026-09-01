@@ -43,7 +43,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAG15pSehmpYOcO6vQcFZCMtNMzgQ3co4HQ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758741369:AAFghyYnFHb2Sigqhr5hQDyYH5BF0zNNDVQ")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -329,7 +329,7 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة والمقارنة - إصلاح التكرار النهائي ] ====================
+# ==================== [ استجابة الدردشة - الحل الجذري للتكرار ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -341,7 +341,7 @@ async def handle_group_chat_trigger(event):
         me = await bot.get_me()
         bot_id = me.id
 
-    # 1. منع البوت من الرد على نفسه أو على الحساب المساعد
+    # 1. منع البوت من الرد على رسائله الخاصة
     if event.sender_id == bot_id:
         return
 
@@ -350,7 +350,7 @@ async def handle_group_chat_trigger(event):
     if not sess:
         return
 
-    # 2. قفل لمنع معالجة نفس المعرّف للرسالة أكثر من مرة
+    # 2. قفل المعالج عن طريق الـ ID الخاص بالرسالة
     msg_key = (chat_id, event.id)
     if msg_key in handled_messages:
         return
@@ -358,11 +358,6 @@ async def handle_group_chat_trigger(event):
 
     if len(handled_messages) > 1000:
         handled_messages.clear()
-
-    # 3. مهلة زمنية (Cooldown) لحماية الرد المتكرر (أقل شيء ثانيتين بين كل نقطة وثانية)
-    now = time.time()
-    if now - sess.get("last_answer_time", 0) < 2.0:
-        return
 
     lock = sess["lock"]
     async with lock:
@@ -394,17 +389,17 @@ async def handle_group_chat_trigger(event):
                 matched = True
 
         if matched:
-            sess["last_answer_time"] = time.time()
+            # 🛑 أهم خطوة: زيادة المؤشر مباشرة داخل الـ lock لتغيير السؤال فوراً
             sess["index"] += 1
             
-            # إلغاء مؤقت التسكيب التلقائي فور الجواب الصحيح
+            # إيقاف التايمر التلقائي
             if sess.get("timer_task"):
                 sess["timer_task"].cancel()
                 sess["timer_task"] = None
 
+            # إرسال الرسالة وتشغيل الصوتية القادمة
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
-            raise events.StopPropagation
 
 # ==================== [ معالجة المدخلات والحذف ] ====================
 
@@ -713,8 +708,7 @@ async def callback_handler(event):
                     "provider_name": p_name,
                     "category_name": category_ar,
                     "lock": asyncio.Lock(),
-                    "timer_task": None,
-                    "last_answer_time": 0
+                    "timer_task": None
                 }
 
                 await play_current_voice(chat_id)
