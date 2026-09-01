@@ -82,7 +82,7 @@ user_states = {}
 temp_clients = {}
 chat_history_buffer = defaultdict(list)
 
-# الجلسات النشطة في المكالمات: { chat_id: { "pytgcalls": obj, "assistant": obj, "queue": [], "index": 0, "provider": name, "category": cat } }
+# الجلسات النشطة في المكالمات
 active_sessions = {}
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
@@ -90,9 +90,7 @@ active_sessions = {}
 def normalize_text(text):
     if not text:
         return ""
-    # إزالة المسافات والرموز والتشكيل
     text = re.sub(r'[\s\-_.\u064B-\u0652]', '', text)
-    # معالجة الهاء والتاء المربوطة والهمزات
     text = text.replace('ة', 'ه')
     text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     return text.lower()
@@ -138,7 +136,6 @@ def dev_keyboard():
 def assistant_menu_keyboard():
     return [
         [Button.inline("📞 تسجيل الدخول برقم الهاتف", data="login_by_phone")],
-        [Button.inline("🔑 طريقة كود الـ Session (مباشرة)", data="add_assistant_session")],
         [Button.inline("🗑️ حذف الحساب المساعد الحالي", data="remove_assistant")],
         [Button.inline("🔙 رجوع", data="dev_settings")]
     ]
@@ -247,7 +244,6 @@ async def start_voice_training_group(event):
     await event.reply("🎙️ **اختر المقدم للبدء في المحادثة الصوتية:**", buttons=group_providers_keyboard())
     raise events.StopPropagation
 
-# أمر الخروج الحساب المساعد: "انزل"
 @bot.on(events.NewMessage(pattern=r"^انزل$"))
 async def leave_voice_call(event):
     if event.is_private:
@@ -285,7 +281,6 @@ async def play_current_voice(chat_id):
     queue = sess["queue"]
 
     if idx >= len(queue):
-        # انتهت كافة الأرقام/الكلمات للمقدم
         p_name = sess["provider_name"]
         cat_name = sess["category_name"]
         await bot.send_message(chat_id, f"✅ **تم انتهاء الفئة ({cat_name}) للمقدم ({p_name})**")
@@ -330,7 +325,6 @@ async def handle_group_chat_trigger(event):
 
     raw_text = event.text.strip()
     
-    # تخزين التكرار والرسائل المنفصلة
     chat_history_buffer[chat_id].append(raw_text)
     if len(chat_history_buffer[chat_id]) > 3:
         chat_history_buffer[chat_id].pop(0)
@@ -347,11 +341,9 @@ async def handle_group_chat_trigger(event):
 
     matched = False
 
-    # 1. مطابقة الكلمات (يدعم تفكيك الحروف وتدبيلها والمقارنة التراكمية ومعالجة ه/ة)
     if norm_target and (norm_target == norm_single or norm_target == norm_combined or norm_target in norm_single or norm_target in norm_combined):
         matched = True
 
-    # 2. مطابقة الأرقام (تكرار الأرقام، الأرقام المفككة، المدبلة، المقسمة على 3 رسائل)
     if not matched and digits_target:
         if digits_target == digits_single or digits_target == digits_combined or digits_target in digits_single or digits_target in digits_combined:
             matched = True
@@ -359,8 +351,6 @@ async def handle_group_chat_trigger(event):
     if matched:
         await event.reply("يمك نقطه")
         chat_history_buffer[chat_id].clear()
-        
-        # الانتقال للصوت التالي للمقدم
         sess["index"] += 1
         await play_current_voice(chat_id)
 
@@ -410,7 +400,7 @@ async def process_inputs(event):
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(f"✅ **تم تسجيل الدخول للحساب المساعد ({me.first_name}) بنجاح!**")
+            await event.reply(f"✅ **تم تسجيل الدخول ورابط الحساب المساعد ({me.first_name}) وحفظه دائمياً بنجاح!**")
         except Exception as e:
             if "SessionPasswordNeededError" in str(e) or "two-step" in str(e).lower():
                 user_states[user_id] = {"action": "awaiting_2fa_password"}
@@ -435,7 +425,7 @@ async def process_inputs(event):
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(f"✅ **تم تسجيل الدخول للحساب المساعد ({me.first_name}) بنجاح!**")
+            await event.reply(f"✅ **تم تسجيل الدخول ورابط الحساب المساعد ({me.first_name}) وحفظه دائمياً بنجاح!**")
         except Exception as e:
             await event.reply(f"❌ كلمة المرور غير صحيحة:\n`{e}`")
             user_states.pop(user_id, None)
@@ -482,25 +472,6 @@ async def process_inputs(event):
         save_data(db)
 
         await event.reply(f"✅ **تم ربط الفويس بنجاح مع الكلمة:** `{trigger_text}`", buttons=provider_voices_keyboard(p_id))
-        user_states.pop(user_id, None)
-        raise events.StopPropagation
-
-    elif action == "awaiting_assistant_session":
-        session_candidate = text.strip()
-        try:
-            temp_client = TelegramClient(StringSession(session_candidate), API_ID, API_HASH)
-            await temp_client.connect()
-            if await temp_client.is_user_authorized():
-                me = await temp_client.get_me()
-                db["assistant_session"] = session_candidate
-                save_data(db)
-                await temp_client.disconnect()
-                await event.reply(f"✅ **تم ربط الحساب المساعد ({me.first_name}) بنجاح!**")
-            else:
-                await temp_client.disconnect()
-                await event.reply("❌ كود الجلسة غير صالح.")
-        except Exception as e:
-            await event.reply(f"❌ خطأ أثناء تجربة الجلسة:\n`{e}`")
         user_states.pop(user_id, None)
         raise events.StopPropagation
 
@@ -572,9 +543,6 @@ async def callback_handler(event):
         elif data == "login_by_phone" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_phone_number"}
             await event.edit("📞 **أرسل رقم هاتف الحساب المساعد (مثال: +9647700000000):**")
-        elif data == "add_assistant_session" and user_id in db["developers"]:
-            user_states[user_id] = {"action": "awaiting_assistant_session"}
-            await event.edit("🔑 **أرسل كود الـ String Session الحجم الكامل:**")
         elif data == "remove_assistant" and user_id in db["developers"]:
             db["assistant_session"] = None
             save_data(db)
@@ -619,7 +587,8 @@ async def callback_handler(event):
             parts = data.split("_")
             p_id, category = parts[2], parts[3]
 
-            if not db.get("assistant_session"):
+            saved_session = db.get("assistant_session")
+            if not saved_session:
                 return await event.answer("❌ لم يتم ربط الحساب المساعد بعد!", alert=True)
 
             voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
@@ -635,7 +604,7 @@ async def callback_handler(event):
                 if chat_id in active_sessions:
                     await stop_and_leave_call(chat_id)
 
-                assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
+                assistant = TelegramClient(StringSession(saved_session), API_ID, API_HASH)
                 await assistant.connect()
 
                 call_py = PyTgCalls(assistant)
@@ -658,10 +627,28 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ التشغيل الأساسي ] ====================
+# ==================== [ التشغيل الأساسي مع الحماية التلقائية ] ====================
+
+async def main():
+    print("🚀 جاري تشغيل البوت...")
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            print("✅ تم اتصال البوت بنجاح!")
+            await bot.run_until_disconnected()
+            break
+        except Exception as e:
+            err_msg = str(e)
+            if "FloodWaitError" in err_msg or "A wait of" in err_msg:
+                match = re.search(r'wait of (\d+) seconds', err_msg)
+                wait_sec = int(match.group(1)) + 5 if match else 60
+                print(f"⚠️ حظر مؤقت من تلغرام (FloodWait). جاري الانتظار لمدة {wait_sec} ثانية ثم إعادة الاتصال تلقائياً...")
+                await asyncio.sleep(wait_sec)
+            else:
+                print(f"❌ خطأ أثناء التشغيل: {e}")
+                await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    print("🚀 جاري تشغيل البوت...")
-    bot.start(bot_token=BOT_TOKEN)
-    bot.run_until_disconnected()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
 
