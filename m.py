@@ -23,7 +23,7 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     serve(app, host="0.0.0.0", port=port)
 
-# تشغيل خادم الويب في خلفية مستقلة
+# تشغيل خادم الويب في خلفية مستقلة لمنع إغلاق السيرفر
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
@@ -156,6 +156,7 @@ async def activate_group(event):
     chat_id = event.chat_id
     user_id = event.sender_id
 
+    # التأكد من صلاحيات المشرف أو المطور
     is_admin = False
     if user_id in db["developers"]:
         is_admin = True
@@ -189,7 +190,7 @@ async def start_voice_training(event):
     chat_id = event.chat_id
 
     if chat_id not in db["activated_groups"]:
-        return await event.reply("⚠️ المجموعة غير مفعلة! أرسل `تفعيل` أولاً.")
+        return await event.reply("⚠️ المجموعة غير مفعلة! يجب رفع البوت مشرفاً وكتابة `تفعيل` أولاً.")
 
     if not db.get("assistant_session"):
         return await event.reply("❌ لم يتم ربط الحساب المساعد بعد من قبل المطور!")
@@ -201,7 +202,7 @@ async def start_voice_training(event):
             break
 
     if not file_to_play:
-        return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي محجوز في إعدادات المقدمين.")
+        return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي مرفوع في إعدادات المقدمين.")
 
     msg = await event.reply("🎙️ **جاري صعود الحساب المساعد للمكالمة الصوتية...**")
 
@@ -221,14 +222,14 @@ async def start_voice_training(event):
             MediaStream(file_to_play)
         )
 
-        await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ قراءة الصوتيات في الاتصال!** 🎙️")
+        await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ التشغيل!** 🎙️")
 
     except Exception as e:
         await msg.edit(
             f"❌ **حدث خطأ عند صعود الاتصال الصوتي:**\n`{e}`\n\n"
-            "⚠️ **خطوات التأكد:**\n"
-            "1️⃣ تأكد من **فتح المكالمة الصوتية (Voice Chat)** في الكروب يدوياً أولاً.\n"
-            "2️⃣ تأكد من أن الحساب المساعد موجود في المجموعة ويمتلك صلاحية التحدث."
+            "⚠️ **تأكد من الآتي:**\n"
+            "1️⃣ فتح المحادثة الصوتية (Voice Chat) في المجموعة يدوياً.\n"
+            "2️⃣ انضمام الحساب المساعد للمجموعة وامتلاكه صلاحية التحدث."
         )
 
 # ==================== [ معالجة المدخلات والنصوص ] ====================
