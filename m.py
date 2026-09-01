@@ -3,6 +3,7 @@ import json
 import re
 import asyncio
 import threading
+import time
 from flask import Flask
 from waitress import serve
 from telethon import TelegramClient, events, Button
@@ -81,6 +82,7 @@ user_states = {}
 temp_clients = {}
 active_sessions = {}
 handled_messages = set()
+bot_id = None
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
@@ -327,11 +329,20 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة والمقارنة - حماية تامة من التكرار ] ====================
+# ==================== [ استجابة الدردشة والمقارنة - إصلاح التكرار النهائي ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
     if not event.text:
+        return
+
+    global bot_id
+    if not bot_id:
+        me = await bot.get_me()
+        bot_id = me.id
+
+    # 1. منع البوت من الرد على نفسه أو على الحساب المساعد
+    if event.sender_id == bot_id:
         return
 
     chat_id = event.chat_id
@@ -339,7 +350,7 @@ async def handle_group_chat_trigger(event):
     if not sess:
         return
 
-    # 🛑 قفل حاسم: منع معالجة المعرّف نفسه أكثر من مرة
+    # 2. قفل لمنع معالجة نفس المعرّف للرسالة أكثر من مرة
     msg_key = (chat_id, event.id)
     if msg_key in handled_messages:
         return
@@ -347,6 +358,11 @@ async def handle_group_chat_trigger(event):
 
     if len(handled_messages) > 1000:
         handled_messages.clear()
+
+    # 3. مهلة زمنية (Cooldown) لحماية الرد المتكرر (أقل شيء ثانيتين بين كل نقطة وثانية)
+    now = time.time()
+    if now - sess.get("last_answer_time", 0) < 2.0:
+        return
 
     lock = sess["lock"]
     async with lock:
@@ -378,7 +394,14 @@ async def handle_group_chat_trigger(event):
                 matched = True
 
         if matched:
+            sess["last_answer_time"] = time.time()
             sess["index"] += 1
+            
+            # إلغاء مؤقت التسكيب التلقائي فور الجواب الصحيح
+            if sess.get("timer_task"):
+                sess["timer_task"].cancel()
+                sess["timer_task"] = None
+
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
             raise events.StopPropagation
@@ -690,7 +713,8 @@ async def callback_handler(event):
                     "provider_name": p_name,
                     "category_name": category_ar,
                     "lock": asyncio.Lock(),
-                    "timer_task": None
+                    "timer_task": None,
+                    "last_answer_time": 0
                 }
 
                 await play_current_voice(chat_id)
@@ -713,11 +737,9 @@ def run_bot_safe():
             break
         except FloodWaitError as e:
             print(f"⚠️ تليجرام فرض انتظار لمدة {e.seconds} ثانية (FloodWaitError)...")
-            import time
             time.sleep(e.seconds + 5)
         except Exception as e:
             print(f"❌ خطأ غير متوقع: {e}")
-            import time
             time.sleep(10)
 
 if __name__ == "__main__":
