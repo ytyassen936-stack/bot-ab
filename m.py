@@ -16,7 +16,7 @@ from telethon.errors import (
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))            # ضع API_ID الخاص بك
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")       # ضع API_HASH الخاص بك
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAFIc8-0CGN-8403v6B1chNs3MyRU56Dtdk")    # ضع BOT_TOKEN الخاص بك
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")    # ضع BOT_TOKEN الخاص بك
 
 SUDO_ID = int(os.environ.get("SUDO_ID", 7493679412))          # آيدي المطور الأساسي
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6") # يوزر المطور بدون @
