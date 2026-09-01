@@ -42,7 +42,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAG15pSehmpYOcO6vQcFZCMtNMzgQ3co4HQ")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -298,7 +298,7 @@ async def play_current_voice(chat_id):
         except Exception:
             pass
 
-# ==================== [ استجابة الدردشة والتحقق مع مانع التكرار الصارم ] ====================
+# ==================== [ مانع التكرار ومنع انتشار الحدث ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -310,7 +310,6 @@ async def handle_group_chat_trigger(event):
     if not sess:
         return
 
-    # استخدام Asyncio Lock يمنع المعالجة المتوازية تماماً
     lock = sess["lock"]
     async with lock:
         queue = sess["queue"]
@@ -341,10 +340,11 @@ async def handle_group_chat_trigger(event):
                 matched = True
 
         if matched:
-            # زيادة المؤشر داخل القفل لمنع باقي الرسائل المزدوجة من التفقد
             sess["index"] += 1
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
+            # إيقاف انتشار هذا الحدث نهائياً لعدم تكرار المعالجة
+            raise events.StopPropagation
 
 # ==================== [ معالجة مدخلات الخاص للمطور ] ====================
 
@@ -602,7 +602,7 @@ async def callback_handler(event):
                     "index": 0,
                     "provider_name": p_name,
                     "category_name": category_ar,
-                    "lock": asyncio.Lock()  # قفل لتجنب التكرار المتوازي
+                    "lock": asyncio.Lock()
                 }
 
                 await play_current_voice(chat_id)
