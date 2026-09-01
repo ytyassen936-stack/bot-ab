@@ -80,6 +80,7 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 active_sessions = {}
+handled_messages = set()  # ذاكرة لمنع تكرار الرد على نفس الرسالة
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
@@ -156,6 +157,7 @@ def provider_voices_keyboard(p_id):
          Button.inline(f"📝 كلمات ({word_count})", data=f"upload_voice_{p_id}_words")],
         [Button.inline(f"🔀 عشوائي ({rand_count})", data=f"upload_voice_{p_id}_random")],
         [Button.inline("🗑️ حذف فويس معين", data=f"delete_voice_{p_id}")],
+        [Button.inline("❌ حذف المقدم بالكامل", data=f"delete_provider_{p_id}")],
         [Button.inline("🔙 رجوع لإعدادات المقدمين", data="provider_settings")]
     ]
 
@@ -267,14 +269,13 @@ async def stop_and_leave_call(chat_id):
 # ==================== [ تشغيل الصوت وتأقيت التسكيب التلقائي ] ====================
 
 async def auto_skip_timer(chat_id, expected_idx):
-    await asyncio.sleep(3) # الانتظار 3 ثوانٍ
+    await asyncio.sleep(3)
     sess = active_sessions.get(chat_id)
     if not sess:
         return
 
     lock = sess["lock"]
     async with lock:
-        # التأكد أن السؤال لم يتم الإجابة عليه أثناء الثواني الـ 3
         if sess["index"] == expected_idx:
             queue = sess["queue"]
             if expected_idx < len(queue):
@@ -291,7 +292,6 @@ async def play_current_voice(chat_id):
     if not sess:
         return
 
-    # الغاء المؤقت السابق إن وجد
     if sess.get("timer_task"):
         sess["timer_task"].cancel()
         sess["timer_task"] = None
@@ -325,10 +325,9 @@ async def play_current_voice(chat_id):
         except Exception:
             pass
 
-    # بدء مؤقت 3 ثوانٍ للتسكيب التلقائي
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة والمقارنة ] ====================
+# ==================== [ استجابة الدردشة والمقارنة - بدون تكرار ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -339,6 +338,16 @@ async def handle_group_chat_trigger(event):
     sess = active_sessions.get(chat_id)
     if not sess:
         return
+
+    # 🛑 حماية من التكرار 3 مرات: التأكد أن الرسالة لم تُعالج سابقاً
+    msg_key = (chat_id, event.id)
+    if msg_key in handled_messages:
+        return
+    handled_messages.add(msg_key)
+
+    # تنظيف الذاكرة بشكل مجدول للحفاظ على السرعة
+    if len(handled_messages) > 1000:
+        handled_messages.clear()
 
     lock = sess["lock"]
     async with lock:
@@ -373,7 +382,6 @@ async def handle_group_chat_trigger(event):
             sess["index"] += 1
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
-            raise events.StopPropagation
 
 # ==================== [ معالجة المدخلات والحذف ] ====================
 
@@ -407,7 +415,6 @@ async def process_inputs(event):
                 for item in voices_db[cat]:
                     if item.get("text", "").strip() == to_delete:
                         deleted_count += 1
-                        # حذف الملف الصوتي إن وجد
                         if os.path.exists(item.get("file", "")):
                             try:
                                 os.remove(item.get("file", ""))
@@ -620,6 +627,22 @@ async def callback_handler(event):
         elif data.startswith("manage_prov_") and user_id in db["developers"]:
             p_id = data.split("_")[2]
             await event.edit("⚙️ اختر نوع الفويس لإضافته أو حذفه للمقدم:", buttons=provider_voices_keyboard(p_id))
+        elif data.startswith("delete_provider_") and user_id in db["developers"]:
+            p_id = data.split("_")[2]
+            if p_id in db["providers"]:
+                p_name = db["providers"][p_id].get("name", p_id)
+                # حذف ملفات فويسات هذا المقدم من القرص
+                for cat in ["numbers", "words", "random"]:
+                    for item in db["providers"][p_id].get("voices", {}).get(cat, []):
+                        if os.path.exists(item.get("file", "")):
+                            try:
+                                os.remove(item.get("file", ""))
+                            except Exception:
+                                pass
+                del db["providers"][p_id]
+                save_data(db)
+                await event.answer(f"🗑️ تم حذف المقدم ({p_name}) بنجاح!", alert=True)
+            await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
         elif data.startswith("delete_voice_") and user_id in db["developers"]:
             p_id = data.split("_")[2]
             user_states[user_id] = {"action": "awaiting_voice_to_delete", "provider_id": p_id}
@@ -679,7 +702,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ التشغيل الأساسي المستقر لمعالجة FloodWait ] ====================
+# ==================== [ التشغيل الأساسي المستقر ومعالجة FloodWait ] ====================
 
 def run_bot_safe():
     print("🚀 جاري تشغيل البوت...")
@@ -700,3 +723,4 @@ def run_bot_safe():
 
 if __name__ == "__main__":
     run_bot_safe()
+
