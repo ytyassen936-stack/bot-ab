@@ -1,483 +1,435 @@
-import asyncio
 import os
-from aiohttp import web
-
-# حل مشكلة Event Loop في Python 3.10+ / 3.14
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import (
-    UserAlreadyParticipant, 
-    InviteHashExpired, 
-    InviteRequestSent, 
-    UserBannedInChannel,
-    MessageNotModified
+import json
+import asyncio
+from telethon import TelegramClient, events, Button
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
+from telethon.errors import (
+    PhoneNumberInvalidError,
+    PhoneCodeInvalidError,
+    PhoneCodeExpiredError,
+    SessionPasswordNeededError,
+    PasswordHashInvalidError
 )
 
-# ==============================================================================
-# 🔴 1. المتغيرات الأساسية (تستجلب من البيئة أو تكتب هنا)
-# ==============================================================================
-API_ID = int(os.environ.get("API_ID", "30277194"))          # اكتب الـ API_ID
-API_HASH = os.environ.get("API_HASH", "c491b2abf1654641536efb798e50cf15")    # اكتب الـ API_HASH
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8292971150:AAHD75wBeGS_pUEUKE93PCSp9ZPy1L9TGTM")  # اكتب BOT_TOKEN
-MAIN_ADMIN_ID = int(os.environ.get("MAIN_ADMIN_ID", "7493679412")) # أيدي حسابك
-DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6") # معرفك بدون @
+# ==================== [ إعدادات البوت الأساسية ] ====================
+API_ID = 34733680              # ضع API_ID الخاص بك هنا (رقم)
+API_HASH = "dc47a14a8d693f8afbb73237d2ad7de8"      # ضع API_HASH الخاص بك هنا
+BOT_TOKEN = "8989979653:AAFIc8-0CGN-8403v6B1chNs3MyRU56Dtdk"    # ضع توكن البوت هنا
 
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "shdsbam@gmail.com")
-SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "fgyujbho980")
-# ==============================================================================
+SUDO_ID = 7493679412             # أيدي المطور الأساسي (رقم)
+DEV_USERNAME = "XX7X6"  # يوزر المطور بدون @
 
-DEV_USERS = [MAIN_ADMIN_ID]
-USER_SUBSCRIPTIONS = {}
-CUSTOM_BUTTONS = []
+bot = TelegramClient("VoiceTrainingBot", API_ID, API_HASH)
 
-MINE_CONFIG = {
-    "word": "ا",
-    "mine_photo": None,
-    "main_photo": None
-}
+# ==================== [ قاعدة البيانات ] ====================
+DATA_FILE = "bot_database.json"
 
-# ---------------- CLIENTS INITIALIZATION ----------------
-user_account = Client("my_account", api_id=API_ID, api_hash=API_HASH)
-bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "developers": [SUDO_ID],
+        "blocked_users": [],
+        "activated_groups": [],
+        "providers": {},
+        "free_mode": True,
+        "dev_username": DEV_USERNAME,
+        "assistant_session": None
+    }
 
+def save_data(db_data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(db_data, f, ensure_ascii=False, indent=4)
+
+db = load_data()
 user_states = {}
 
-# ---------------- WEB SERVER FOR RENDER ----------------
-async def handle_ping(request):
-    return web.Response(text="Bot is running 24/7!")
+# ==================== [ الأزرار الشفافة ] ====================
 
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Web server successfully bound to port {port}")
+def get_dev_link():
+    dev_user = db.get("dev_username", DEV_USERNAME).replace("@", "")
+    return f"https://t.me/{dev_user}"
 
-# ---------------- HELPER FUNCTIONS ----------------
-def is_authorized(user_id):
-    return (user_id in DEV_USERS) or (user_id == MAIN_ADMIN_ID) or (USER_SUBSCRIPTIONS.get(user_id) == True)
-
-def is_dev(user_id):
-    return (user_id in DEV_USERS) or (user_id == MAIN_ADMIN_ID)
-
-def send_email_smtp(to_email, subject, body):
-    if not SENDER_EMAIL or not SENDER_PASSWORD or "example" in SENDER_EMAIL:
-        return False, "لم يتم ضبط البريد بشكل صحيح!"
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = SENDER_EMAIL
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        text = msg.as_string()
-        server.sendmail(SENDER_EMAIL, to_email, text)
-        server.quit()
-        return True, "تم الإرسال بنجاح"
-    except Exception as e:
-        return False, str(e)
-
-async def safe_edit_text(message_or_query, text, **kwargs):
-    try:
-        if isinstance(message_or_query, CallbackQuery):
-            await message_or_query.message.edit_text(text, **kwargs)
-        else:
-            await message_or_query.edit_text(text, **kwargs)
-    except MessageNotModified:
-        pass
-    except Exception as e:
-        print(f"Edit error: {e}")
-
-# ---------------- KEYBOARDS ----------------
-def main_menu_keyboard(user_id):
+async def main_keyboard(user_id):
+    me = await bot.get_me()
     buttons = [
-        [
-            InlineKeyboardButton("🚀 بدء السبام", callback_data="spam_flow_start"),
-            InlineKeyboardButton("🛑 إيقاف السبام", callback_data="stop_spam")
-        ],
-        [
-            InlineKeyboardButton("💣 بدء الهجوم", callback_data="attack_flow_start")
-        ]
+        [Button.url("➕ إضافة إلى مجموعة", f"https://t.me/{me.username}?startgroup=true")],
+        [Button.inline("📖 دليل الاستخدام", data="user_guide"),
+         Button.url("👨‍💻 المطور", get_dev_link())]
     ]
+    if user_id in db["developers"]:
+        buttons.append([Button.inline("⚙️ إعدادات المطورين", data="dev_settings")])
+    return buttons
+
+def dev_keyboard():
+    free_status = "مفعل 🟢" if db.get("free_mode", True) else "معطل 🔴"
+    assistant_status = "مربوط ✅" if db.get("assistant_session") else "غير مربوط ❌"
     
-    for btn in CUSTOM_BUTTONS:
-        buttons.append([InlineKeyboardButton(btn["text"], url=btn["url"])])
+    return [
+        [Button.inline("➕ إضافة مطور", data="add_dev_id"),
+         Button.inline("👤 تغيير يوزر المطور", data="change_dev_user")],
+        [Button.inline(f"📱 إضافة حساب مساعد ({assistant_status})", data="add_assistant"),
+         Button.inline("🚫 حظر شخص", data="block_user")],
+        [Button.inline("📢 إذاعة", data="broadcast"),
+         Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
+        [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"),
+         Button.inline("📦 نسخ احتياطي", data="take_backup")],
+        [Button.inline("🔙 رجوع", data="main_menu")]
+    ]
 
-    if is_dev(user_id):
-        buttons.append([
-            InlineKeyboardButton("⚙️ لوحة المطورين", callback_data="dev_panel"),
-            InlineKeyboardButton("📊 حالة النظام", callback_data="bot_status")
-        ])
+def provider_settings_keyboard():
+    buttons = [
+        [Button.inline("➕ إضافة مقدم", data="add_provider"),
+         Button.inline("🗑️ حذف مقدم", data="remove_provider")]
+    ]
+    for p_id, p_data in db["providers"].items():
+        buttons.append([Button.inline(f"🎙️ {p_data['name']}", data=f"manage_prov_{p_id}")])
+    buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
+    return buttons
 
-    buttons.append([
-        InlineKeyboardButton("developer 🧑‍💻", url=f"https://t.me/{DEV_USERNAME}")
-    ])
+def provider_voices_keyboard(p_id):
+    p_data = db["providers"].get(p_id, {})
+    num_status = "✅" if p_data.get("numbers") else "❌"
+    word_status = "✅" if p_data.get("words") else "❌"
+    rand_status = "✅" if p_data.get("random") else "❌"
 
-    return InlineKeyboardMarkup(buttons)
+    return [
+        [Button.inline(f"🔢 أرقام ({num_status})", data=f"upload_voice_{p_id}_numbers")],
+        [Button.inline(f"📝 كلمات ({word_status})", data=f"upload_voice_{p_id}_words")],
+        [Button.inline(f"🔀 عشوائي ({rand_status})", data=f"upload_voice_{p_id}_random")],
+        [Button.inline("🔙 رجوع لإعدادات المقدمين", data="provider_settings")]
+    ]
 
-def attack_count_keyboard():
-    buttons = []
-    row = []
-    for i in range(1, 11):
-        row.append(InlineKeyboardButton(f"{i}", callback_data=f"set_attack_count_{i}"))
-        if len(row) == 5:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")])
-    return InlineKeyboardMarkup(buttons)
+# ==================== [ الأوامر والتفعيل ] ====================
 
-def dev_panel_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ إضافة مطور", callback_data="dev_add_admin"),
-            InlineKeyboardButton("🎟️ تفعيل اشتراك لمستخدم", callback_data="dev_add_sub")
-        ],
-        [
-            InlineKeyboardButton("✏️ تغيير كلمة التلغيم", callback_data="dev_set_word"),
-            InlineKeyboardButton("🖼️ تغيير صور التلغيم", callback_data="dev_set_photos")
-        ],
-        [
-            InlineKeyboardButton("🔘 إضافة زر مخصص", callback_data="dev_add_button"),
-            InlineKeyboardButton("🗑️ مسح الأزرار المخصصة", callback_data="dev_clear_buttons")
-        ],
-        [
-            InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")
-        ]
-    ])
-
-# ---------------- BOT HANDLERS ----------------
-@bot.on_message(filters.command("start") & filters.private)
-async def start_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_states[user_id] = None
-
-    if not is_authorized(user_id):
-        unauthorized_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("developer 🧑‍💻", url=f"https://t.me/{DEV_USERNAME}")]
-        ])
-        await message.reply_text(
-            "🔒 **عذراً، البوت غير مصرح لك باستخدامه!**\n\n"
-            "ليس لديك اشتراك فعال.\n"
-            f"تواصل مع المطور للتفعيل: @{DEV_USERNAME}",
-            reply_markup=unauthorized_kb
-        )
+@bot.on(events.NewMessage(pattern=r"^/start$", incoming=True))
+async def start_handler(event):
+    if not event.is_private:
         return
+    user_id = event.sender_id
+    if user_id in db["blocked_users"]:
+        return await event.reply("❌ أنت محظور من استخدام هذا البوت.")
     
-    welcome_msg = (
-        f"🙋‍♂️ أهلاً بك يا {message.from_user.mention}!\n\n"
-        "✨ **الخدمات المتاحة:**\n"
-        "• قسم السبام المطور عبر البريد\n"
-        "• قسم الهجوم والتلغيم الذكي\n\n"
-        "👇 اختر المطلوب من القائمة:"
+    user_states.pop(user_id, None)
+    sender = await event.get_sender()
+    first_name = sender.first_name if sender else "المستخدم"
+    
+    await event.reply(
+        f"أهلاً بك **{first_name}** في بوت التدريب الصوتي! 🎙️\n\nاختر من الأزرار أدناه:",
+        buttons=await main_keyboard(user_id)
     )
-    await message.reply_text(welcome_msg, reply_markup=main_menu_keyboard(user_id))
 
-@bot.on_callback_query()
-async def callback_handler(client: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    data = callback.data
+@bot.on(events.NewMessage(pattern=r"^تفعيل$"))
+async def activate_group(event):
+    if event.is_private:
+        return
+    chat_id = event.chat_id
+    user_id = event.sender_id
 
-    if not is_authorized(user_id):
-        await callback.answer(f"🔒 البوت غير مصرح لك! تواصل مع المطور: @{DEV_USERNAME}", show_alert=True)
+    is_admin = False
+    if user_id in db["developers"]:
+        is_admin = True
+    else:
+        try:
+            part = await bot(GetParticipantRequest(chat_id, user_id))
+            if isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator)):
+                is_admin = True
+        except Exception:
+            pass
+
+    if not is_admin:
+        return await event.reply("❌ هذا الأمر محصور بمشرفي المجموعة فقط.")
+
+    if chat_id not in db["activated_groups"]:
+        db["activated_groups"].append(chat_id)
+        save_data(db)
+
+    buttons = [
+        [Button.inline("📖 دليل الاستخدام", data="user_guide"),
+         Button.url("👨‍💻 المطور", get_dev_link())]
+    ]
+    await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nللبدء أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
+
+# ==================== [ معالجة البدء والتدريب الصوتي ] ====================
+
+@bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
+async def start_voice_training(event):
+    if event.is_private:
+        return
+    chat_id = event.chat_id
+
+    if chat_id not in db["activated_groups"]:
+        return await event.reply("⚠️ المجموعة غير مفعلة! أرسل `تفعيل` أولاً.")
+
+    file_to_play = None
+    for p_id, p_data in db.get("providers", {}).items():
+        file_to_play = p_data.get("numbers") or p_data.get("words") or p_data.get("random")
+        if file_to_play:
+            break
+
+    if not file_to_play:
+        return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي مسجل في إعدادات المقدمين.")
+
+    msg = await event.reply("🎙️ **جاري بدء جلسة التدريب الصوتي...**")
+
+    try:
+        await bot.send_file(chat_id, file_to_play, voice_note=True, caption="🎙️ مقطع التدريب الصوتي")
+        await msg.delete()
+    except Exception as e:
+        await msg.edit(f"❌ حدث خطأ أثناء إرسال الصوتية:\n`{e}`")
+
+# ==================== [ معالجة مدخلات النصوص للمطور ] ====================
+
+@bot.on(events.NewMessage(incoming=True))
+async def process_inputs(event):
+    if not event.is_private or event.text.startswith("/"):
         return
 
-    if data == "main_menu":
-        user_states[user_id] = None
-        await safe_edit_text(callback, "⚙️ **القائمة الرئيسية:**", reply_markup=main_menu_keyboard(user_id))
-
-    elif data == "spam_flow_start":
-        user_states[user_id] = {"step": "SPAM_SUBJECT"}
-        await safe_edit_text(
-            callback,
-            "🚀 **بدء إعداد السبام:**\n\nيرجى إرسال **موضوع السبام** الآن:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
-        )
-
-    elif data == "stop_spam":
-        user_states[user_id] = None
-        await callback.answer("🛑 تم إيقاف العمليات!", show_alert=True)
-        await safe_edit_text(callback, "⏸️ **تم إيقاف العمليات المعلقة.**", reply_markup=main_menu_keyboard(user_id))
-
-    elif data == "attack_flow_start":
-        user_states[user_id] = {"step": "WAIT_GROUP_LINK"}
-        await safe_edit_text(
-            callback,
-            "💣 **بدء الهجوم:**\n\nأرسل رابط المجموعة الآن فقط:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data="main_menu")]])
-        )
-
-    elif data.startswith("set_attack_count_"):
-        count = int(data.split("_")[-1])
-        group_link = user_states.get(user_id, {}).get("group_link")
-        
-        if not group_link:
-            await safe_edit_text(callback, "❌ حدث خطأ في الحصول على الرابط، حاول مجدداً.", reply_markup=main_menu_keyboard(user_id))
-            return
-
-        await safe_edit_text(callback, f"⏳ **جاري تنفيذ الهجوم للعدد ({count})...**")
-        
-        try:
-            if MINE_CONFIG["mine_photo"]:
-                try:
-                    file_path = await bot.download_media(MINE_CONFIG["mine_photo"])
-                    await user_account.set_profile_photo(photo=file_path)
-                    if os.path.exists(file_path): os.remove(file_path)
-                except Exception:
-                    pass
-
-            chat = await user_account.get_chat(group_link)
-            for _ in range(count):
-                await user_account.send_message(chat.id, MINE_CONFIG["word"])
-                await asyncio.sleep(0.5)
-
-            if MINE_CONFIG["main_photo"]:
-                try:
-                    file_path = await bot.download_media(MINE_CONFIG["main_photo"])
-                    await user_account.set_profile_photo(photo=file_path)
-                    if os.path.exists(file_path): os.remove(file_path)
-                except Exception:
-                    pass
-
-            await safe_edit_text(callback, f"✅ **تم تنفيذ الهجوم بنجاح وصافحت المجموعة {count} مرة! 💣**", reply_markup=main_menu_keyboard(user_id))
-        except Exception as e:
-            await safe_edit_text(callback, f"❌ **حدث خطأ أثناء الهجوم:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
-
-    elif data == "dev_panel":
-        if not is_dev(user_id):
-            await callback.answer("❌ هذه اللوحة مخصصة للمطورين فقط!", show_alert=True)
-            return
-        await safe_edit_text(callback, "⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
-
-    elif data == "dev_add_admin":
-        if not is_dev(user_id): return
-        user_states[user_id] = {"step": "DEV_ADD_ADMIN"}
-        await safe_edit_text(callback, "👤 أرسل الآن **ايدي (ID)** المطور الجديد:")
-
-    elif data == "dev_add_sub":
-        if not is_dev(user_id): return
-        user_states[user_id] = {"step": "DEV_ADD_SUB_ID"}
-        await safe_edit_text(callback, "🎟️ أرسل الآن **ايدي (ID)** المستخدم لتفعيل اشتراكه:")
-
-    elif data == "dev_set_word":
-        if not is_dev(user_id): return
-        user_states[user_id] = {"step": "DEV_SET_WORD"}
-        await safe_edit_text(callback, f"✏️ الكلمة الحالية: `{MINE_CONFIG['word']}`\n\nأرسل **الكلمة الجديدة** للتلغيم:")
-
-    elif data == "dev_set_photos":
-        if not is_dev(user_id): return
-        user_states[user_id] = {"step": "DEV_SET_MINE_PHOTO"}
-        await safe_edit_text(callback, "🖼️ قم بإرسال **صورة التلغيم الأولى** الآن بالدردشة:")
-
-    elif data == "dev_add_button":
-        if not is_dev(user_id): return
-        user_states[user_id] = {"step": "DEV_ADD_BTN_TEXT"}
-        await safe_edit_text(callback, "🔘 أرسل الآن **النص/الاسم** الذي سيظهر على الزر:")
-
-    elif data == "dev_clear_buttons":
-        if not is_dev(user_id): return
-        CUSTOM_BUTTONS.clear()
-        await callback.answer("🗑️ تم مسح جميع الأزرار المخصصة!", show_alert=True)
-        await safe_edit_text(callback, "⚙️ **لوحة التحكم الخاصة بالمطورين:**", reply_markup=dev_panel_keyboard())
-
-    elif data == "bot_status":
-        if not is_dev(user_id):
-            await callback.answer("❌ محمي للمطورين فقط!", show_alert=True)
-            return
-        status_text = (
-            "📊 **حالة النظام واليوزربوت:**\n\n"
-            f"• كلمة التلغيم الحالية: `{MINE_CONFIG['word']}`\n"
-            f"• عدد المطورين: `{len(DEV_USERS)}`\n"
-            f"• عدد المشتركين: `{len(USER_SUBSCRIPTIONS)}`\n"
-            f"• صورة التلغيم: {'مضبوطة ✅' if MINE_CONFIG['mine_photo'] else 'غير مضبوطة ❌'}\n"
-            f"• الصورة الأساسية: {'مضبوطة ✅' if MINE_CONFIG['main_photo'] else 'غير مضبوطة ❌'}\n"
-            "• حالة البوت: 🟢 يعمل بنجاح"
-        )
-        await safe_edit_text(callback, status_text, reply_markup=main_menu_keyboard(user_id))
-
-# ---------------- MEDIA & MESSAGES PROCESSOR ----------------
-@bot.on_message(filters.private & ~filters.bot)
-async def process_inputs(client: Client, message: Message):
-    user_id = message.from_user.id
-
-    if not is_authorized(user_id):
-        unauthorized_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("developer 🧑‍💻", url=f"https://t.me/{DEV_USERNAME}")]
-        ])
-        await message.reply_text(
-            "🔒 **عذراً، البوت غير مصرح لك باستخدامه!**\n\n"
-            "ليس لديك اشتراك فعال.\n"
-            f"تواصل مع المطور للتفعيل: @{DEV_USERNAME}",
-            reply_markup=unauthorized_kb
-        )
+    user_id = event.sender_id
+    if user_id not in db["developers"]:
         return
 
     state = user_states.get(user_id)
-    if not state or not isinstance(state, dict):
+    if not state:
         return
 
-    step = state.get("step")
+    action = state.get("action")
+    text = event.text.strip() if event.text else ""
 
-    if step == "DEV_SET_MINE_PHOTO" and message.photo:
-        MINE_CONFIG["mine_photo"] = message.photo.file_id
-        user_states[user_id] = {"step": "DEV_SET_MAIN_PHOTO"}
-        await message.reply_text("✅ تم حفظ صورة التلغيم!\n\nالان أرسل **الصورة الأساسية** بالدردشة لتثبيتها بعد الهجوم:")
-        return
-
-    elif step == "DEV_SET_MAIN_PHOTO" and message.photo:
-        MINE_CONFIG["main_photo"] = message.photo.file_id
-        user_states[user_id] = None
-        await message.reply_text("✅ تم حفظ الصورة الأساسية بنجاح!", reply_markup=dev_panel_keyboard())
-        return
-
-    if step == "DEV_ADD_BTN_TEXT" and message.text:
-        user_states[user_id] = {"step": "DEV_ADD_BTN_URL", "btn_text": message.text.strip()}
-        await message.reply_text("🔗 ممتاز، الآن أرسل **رابط الزر** (يجب أن يبدأ بـ http:// أو https://):")
-        return
-
-    elif step == "DEV_ADD_BTN_URL" and message.text:
-        url = message.text.strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            await message.reply_text("⚠️ الرابط غير صالح! يرجى إرسال رابط يبدأ بـ http:// أو https://")
-            return
-        
-        btn_text = user_states[user_id]["btn_text"]
-        CUSTOM_BUTTONS.append({"text": btn_text, "url": url})
-        user_states[user_id] = None
-        await message.reply_text(f"✅ تم إضافة الزر المخصص (`{btn_text}`) بنجاح!", reply_markup=dev_panel_keyboard())
-        return
-
-    if step == "SPAM_SUBJECT" and message.text:
-        user_states[user_id] = {"step": "SPAM_MESSAGE", "subject": message.text.strip()}
-        await message.reply_text("✅ تم حفظ الموضوع.\n\nالان يرجى إرسال **نص الرسالة**:")
-
-    elif step == "SPAM_MESSAGE" and message.text:
-        user_states[user_id]["body"] = message.text.strip()
-        user_states[user_id]["step"] = "SPAM_EMAIL"
-        await message.reply_text("✅ تم حفظ النص.\n\nالان يرجى إرسال **البريد الإلكتروني المستهدف**:")
-
-    elif step == "SPAM_EMAIL" and message.text:
-        user_states[user_id]["target_email"] = message.text.strip()
-        user_states[user_id]["step"] = "SPAM_COUNT"
-        await message.reply_text("✅ تم حفظ البريد.\n\nأدخل **عدد رسائل السبام** المطلوب (بين **100** و **2000**):")
-
-    elif step == "SPAM_COUNT" and message.text:
+    if action == "awaiting_dev_id":
         try:
-            count = int(message.text.strip())
-            if count < 100 or count > 2000:
-                await message.reply_text("⚠️ يرجى إدخال عدد بين 100 و 2000!")
-                return
-            
-            subject = user_states[user_id]["subject"]
-            body = user_states[user_id]["body"]
-            target_email = user_states[user_id]["target_email"]
-            
-            wait_msg = await message.reply_text(f"⏳ جاري بدء إرسال ({count}) رسالة سبام إلى `{target_email}`...")
-            
-            success_count = 0
-            for _ in range(count):
-                ok, _ = send_email_smtp(target_email, subject, body)
-                if ok: success_count += 1
-                await asyncio.sleep(0.2)
-
-            await safe_edit_text(wait_msg, f"✅ **تم الانتهاء!**\n\n🎯 الهدف: `{target_email}`\n📩 تم إرسال: `{success_count}` / `{count}`")
-            user_states[user_id] = None
-        except ValueError:
-            await message.reply_text("⚠️ أدخل أرقام فقط!")
-
-    elif step == "WAIT_GROUP_LINK" and message.text:
-        link = message.text.strip()
-        wait_msg = await message.reply_text("⏳ جاري فحص المجموعة والانضمام...")
-
-        try:
-            await user_account.join_chat(link)
-            user_states[user_id] = {"group_link": link}
-            await safe_edit_text(wait_msg, "✅ **تم الانضمام!**\n\nاختر الآن **عدد التلغيم**:", reply_markup=attack_count_keyboard())
-
-        except UserBannedInChannel:
-            user_states[user_id] = None
-            await safe_edit_text(wait_msg, "❌ **الحساب مطرود من المجموعة!**", reply_markup=main_menu_keyboard(user_id))
-
-        except InviteRequestSent:
-            user_states[user_id] = None
-            await safe_edit_text(wait_msg, "⏳ **تم إرسال طلب انضمام، انتظر الموافقة.**", reply_markup=main_menu_keyboard(user_id))
-
-        except UserAlreadyParticipant:
-            user_states[user_id] = {"group_link": link}
-            await safe_edit_text(wait_msg, "⚠️ **الحساب موجود بالفعل.**\n\nاختر عدد التلغيم:", reply_markup=attack_count_keyboard())
-
-        except InviteHashExpired:
-            user_states[user_id] = None
-            await safe_edit_text(wait_msg, "❌ **الرابط منتهي الصلاحية!**", reply_markup=main_menu_keyboard(user_id))
-
-        except Exception as e:
-            user_states[user_id] = None
-            await safe_edit_text(wait_msg, f"❌ **حدث خطأ:**\n`{e}`", reply_markup=main_menu_keyboard(user_id))
-
-    elif step == "DEV_ADD_ADMIN" and message.text:
-        try:
-            new_dev = int(message.text.strip())
-            if new_dev not in DEV_USERS:
-                DEV_USERS.append(new_dev)
-                await message.reply_text(f"✅ تم إضافة المطور: `{new_dev}`", reply_markup=dev_panel_keyboard())
+            new_dev = int(text)
+            if new_dev not in db["developers"]:
+                db["developers"].append(new_dev)
+                save_data(db)
+                await event.reply(f"✅ تم إضافة المطور `{new_dev}` بنجاح.")
             else:
-                await message.reply_text("⚠️ مطور بالفعل!")
+                await event.reply("⚠️ هذا الحساب مطور بالفعل.")
         except ValueError:
-            await message.reply_text("❌ أرسل أرقام فقط!")
-        user_states[user_id] = None
+            await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
+        user_states.pop(user_id, None)
 
-    elif step == "DEV_ADD_SUB_ID" and message.text:
+    elif action == "awaiting_dev_user":
+        db["dev_username"] = text.replace("@", "")
+        save_data(db)
+        await event.reply(f"✅ تم تحديث يوزر المطور إلى: @{db['dev_username']}")
+        user_states.pop(user_id, None)
+
+    elif action == "awaiting_block_id":
         try:
-            target_sub = int(message.text.strip())
-            USER_SUBSCRIPTIONS[target_sub] = True
-            await message.reply_text(f"✅ تم تفعيل الاشتراك للمستخدم `{target_sub}` بنجاح!", reply_markup=dev_panel_keyboard())
+            target_id = int(text)
+            if target_id not in db["blocked_users"]:
+                db["blocked_users"].append(target_id)
+                save_data(db)
+                await event.reply(f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
         except ValueError:
-            await message.reply_text("❌ أرسل ايدي أرقام فقط!")
-        user_states[user_id] = None
+            await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
+        user_states.pop(user_id, None)
 
-    elif step == "DEV_SET_WORD" and message.text:
-        MINE_CONFIG["word"] = message.text.strip()
-        await message.reply_text(f"✅ تم تغيير الكلمة إلى: `{MINE_CONFIG['word']}`", reply_markup=dev_panel_keyboard())
-        user_states[user_id] = None
+    elif action == "awaiting_assistant_phone":
+        from telethon.sessions import StringSession
+        phone_number = text.replace(" ", "")
+        temp_client = TelegramClient(StringSession(), API_ID, API_HASH)
+        
+        try:
+            await temp_client.connect()
+            code_info = await temp_client.send_code_request(phone_number)
+            user_states[user_id] = {
+                "action": "awaiting_assistant_code",
+                "client": temp_client,
+                "phone_number": phone_number,
+                "phone_code_hash": code_info.phone_code_hash
+            }
+            await event.reply("📩 تم إرسال كود التحقيق إلى حسابك في تليجرام.\n\nأرسل **الكود** الآن:")
+        except PhoneNumberInvalidError:
+            await event.reply("❌ رقم الهاتف غير صحيح. حاول مرة أخرى.")
+            user_states.pop(user_id, None)
+        except Exception as e:
+            await event.reply(f"❌ حدث خطأ عند إرسال الكود:\n`{e}`")
+            user_states.pop(user_id, None)
 
-# ---------------- MAIN RUNNER ----------------
-async def main():
-    print("⏳ جاري تشغيل سيرفر الويب أولاً لمنع إغلاق Render...")
-    # تشغيل السيرفر قبل أي شيء آخر لتجاوز Port Scan الخاصة بـ Render
-    await start_web_server()
+    elif action == "awaiting_assistant_code":
+        temp_client = state["client"]
+        phone_number = state["phone_number"]
+        phone_code_hash = state["phone_code_hash"]
+        phone_code = text.replace(" ", "")
 
-    print("⏳ جاري تشغيل البوت الخدمي...")
-    await bot.start()
-    print("✅ تم تشغيل البوت الخدمي بنجاح!")
+        try:
+            await temp_client.sign_in(phone=phone_number, code=phone_code, phone_code_hash=phone_code_hash)
+            session_string = temp_client.session.save()
+            await temp_client.disconnect()
 
-    try:
-        await user_account.start()
-        print("✅ تم تشغيل الحساب الشخصي!")
-    except Exception as e:
-        print(f"⚠️ تنبيه الحساب الشخصي (تأكد من تسجيل الدخول مسبقاً): {e}")
+            db["assistant_session"] = session_string
+            save_data(db)
 
-    print("🚀 البوت جاهز للاستخدام ومحمي بالكامل!")
-    await asyncio.Event().wait()
+            user_states.pop(user_id, None)
+            await event.reply("✅ **تم تسجيل الدخول وحفظ الحساب المساعد بنجاح!**")
+        except SessionPasswordNeededError:
+            user_states[user_id]["action"] = "awaiting_assistant_password"
+            await event.reply("🔐 هذا الحساب مدمج بالتحقق بخطوتين.\nأرسل **باسورد الحساب (2FA)**:")
+        except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+            await event.reply("❌ الكود غير صحيح أو منتهي الصلاحية. يرجى البدء من جديد.")
+            await temp_client.disconnect()
+            user_states.pop(user_id, None)
+        except Exception as e:
+            await event.reply(f"❌ حدث خطأ:\n`{e}`")
+            await temp_client.disconnect()
+            user_states.pop(user_id, None)
+
+    elif action == "awaiting_assistant_password":
+        temp_client = state["client"]
+        password = text
+
+        try:
+            await temp_client.sign_in(password=password)
+            session_string = temp_client.session.save()
+            await temp_client.disconnect()
+
+            db["assistant_session"] = session_string
+            save_data(db)
+
+            user_states.pop(user_id, None)
+            await event.reply("✅ **تم التحقق من الباسورد وتسجيل الحساب المساعد بنجاح!**")
+        except PasswordHashInvalidError:
+            await event.reply("❌ الباسورد غير صحيح. حاول إرساله مرة أخرى:")
+        except Exception as e:
+            await event.reply(f"❌ حدث خطأ أثناء فحص الباسورد:\n`{e}`")
+            await temp_client.disconnect()
+            user_states.pop(user_id, None)
+
+    elif action == "awaiting_provider_id":
+        user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
+        await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**:")
+
+    elif action == "awaiting_provider_name":
+        p_id = state.get("provider_id")
+        p_name = text
+        db["providers"][p_id] = {"name": p_name, "numbers": None, "words": None, "random": None}
+        save_data(db)
+
+        await event.reply(
+            f"✅ **تم حفظ المقدم [{p_name}] بنجاح!**\n\nاختر من اللوحة رفع الصوتيات الخاصة به:",
+            buttons=provider_voices_keyboard(p_id)
+        )
+        user_states.pop(user_id, None)
+
+    elif action == "awaiting_voice":
+        p_id = state.get("provider_id")
+        v_type = state.get("voice_type")
+
+        if event.voice or event.audio or event.document:
+            file_id = event.media
+            db["providers"][p_id][v_type] = file_id
+            save_data(db)
+
+            await event.reply(
+                f"✅ تم حفظ الملف الصوتي لـ **({v_type})** بنجاح!",
+                buttons=provider_voices_keyboard(p_id)
+            )
+            user_states.pop(user_id, None)
+        else:
+            await event.reply("❌ يرجى إرسال مقطع صوتي / فويس.")
+
+# ==================== [ الأزرار الشفافة Callbacks ] ====================
+
+@bot.on(events.CallbackQuery)
+async def callback_handler(event):
+    data = event.data.decode("utf-8")
+    user_id = event.sender_id
+
+    if data == "main_menu":
+        await event.edit("القائمة الرئيسية للبوت:", buttons=await main_keyboard(user_id))
+
+    elif data == "user_guide":
+        guide_text = (
+            "📖 **دليل الاستخدام الشامل للبوت:**\n\n"
+            "1️⃣ قم بإضافة البوت للمجموعة الخاصة بك.\n"
+            "2️⃣ ارفع البوت مشرفاً في المجموعة.\n"
+            "3️⃣ اكتب كلمة `تفعيل` لتنشيط خدمات البوت.\n"
+            "4️⃣ اكتب `ابداء التدريب الصوتي` للبدء."
+        )
+        buttons = [[Button.inline("🔙 رجوع", data="main_menu")]]
+        await event.edit(guide_text, buttons=buttons)
+
+    elif data == "dev_settings" and user_id in db["developers"]:
+        await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
+
+    elif data == "add_dev_id" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_dev_id"}
+        await event.edit("📥 أرسل **آيدي الحساب (ID)** لإضافته كمطور:")
+
+    elif data == "change_dev_user" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_dev_user"}
+        await event.edit("👤 أرسل **يوزر حسابك الجديد** بدون @:")
+
+    elif data == "add_assistant" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_assistant_phone"}
+        await event.edit(
+            "📱 **إضافة حساب مساعد جديد**\n\n"
+            "أرسل رقم الهاتف مع رمز الدولة الآن.\n"
+            "مثال: `+9647800000000`"
+        )
+
+    elif data == "block_user" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_block_id"}
+        await event.edit("🚫 أرسل **آيدي المستخدم** المراد حظره:")
+
+    elif data == "toggle_free_mode" and user_id in db["developers"]:
+        db["free_mode"] = not db.get("free_mode", True)
+        save_data(db)
+        await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
+
+    elif data == "take_backup" and user_id in db["developers"]:
+        save_data(db)
+        if os.path.exists(DATA_FILE):
+            await bot.send_file(user_id, DATA_FILE, caption="📦 **ملف النسخة الاحتياطية.**")
+            await event.answer("✅ تم الاستخراج بنجاح!", alert=True)
+
+    elif data == "provider_settings" and user_id in db["developers"]:
+        await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
+
+    elif data == "add_provider" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_provider_id"}
+        await event.edit("📥 أرسل **آيدي حساب المقدم**: ")
+
+    elif data.startswith("manage_prov_") and user_id in db["developers"]:
+        p_id = data.split("_")[2]
+        p_name = db["providers"].get(p_id, {}).get("name", "غير معروف")
+        await event.edit(
+            f"⚙️ إعدادات وصوتيات المقدم: **{p_name}**",
+            buttons=provider_voices_keyboard(p_id)
+        )
+
+    elif data.startswith("upload_voice_") and user_id in db["developers"]:
+        parts = data.split("_")
+        p_id, v_type = parts[2], parts[3]
+        user_states[user_id] = {"action": "awaiting_voice", "provider_id": p_id, "voice_type": v_type}
+        await event.edit(f"🎙️ أرسل الآن **الفويس الصوتي** لقسم ({v_type}):")
+
+    elif data == "remove_provider" and user_id in db["developers"]:
+        if not db["providers"]:
+            return await event.answer("❌ لا يوجد مقدمين لحذفهم.", alert=True)
+        
+        buttons = []
+        for p_id, p_data in db["providers"].items():
+            buttons.append([Button.inline(f"❌ {p_data['name']}", data=f"del_prov_{p_id}")])
+        buttons.append([Button.inline("🔙 رجوع", data="provider_settings")])
+        await event.edit("🗑️ اختر المقدم المراد حذفه:", buttons=buttons)
+
+    elif data.startswith("del_prov_") and user_id in db["developers"]:
+        p_id = data.split("_")[2]
+        if p_id in db["providers"]:
+            del db["providers"][p_id]
+            save_data(db)
+            await event.answer("✅ تم حذف المقدم.", alert=True)
+        await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        print("\n🛑 تم إيقاف البوت.")
+    print("🚀 تم تشغيل البوت بنجاح...")
+    bot.start(bot_token=BOT_TOKEN)
+    bot.run_until_disconnected()
