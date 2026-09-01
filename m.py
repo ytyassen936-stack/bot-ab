@@ -1,12 +1,13 @@
 import os
 import json
 import asyncio
+from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 
-# مكتبة تشغيل الصوت في المكالمات الجماعية (المسارات المحدثة والمستقرة)
+# مكتبة تشغيل الصوت في المكالمات الجماعية
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
@@ -176,7 +177,6 @@ async def start_voice_training(event):
     if not db.get("assistant_session"):
         return await event.reply("❌ لم يتم ربط الحساب المساعد بعد من قبل المطور!")
 
-    # التفتيش عن الصوت المحفوظ
     file_to_play = None
     for p_id, p_data in db.get("providers", {}).items():
         file_to_play = p_data.get("numbers") or p_data.get("words") or p_data.get("random")
@@ -189,7 +189,6 @@ async def start_voice_training(event):
     msg = await event.reply("🎙️ **جاري صعود الحساب المساعد للمكالمة الصوتية...**")
 
     try:
-        # تشغيل العميل الخاص بالحساب المساعد
         assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
         await assistant.connect()
 
@@ -200,7 +199,6 @@ async def start_voice_training(event):
         call_py = PyTgCalls(assistant)
         await call_py.start()
 
-        # الانضمام للمكالمة الصوتية المفتوحة داخل الكروب
         await call_py.join_group_call(
             chat_id,
             MediaStream(file_to_play, video_flags=MediaStream.Flags.IGNORE)
@@ -216,7 +214,7 @@ async def start_voice_training(event):
             "2️⃣ تأكد من أن الحساب المساعد موجود في المجموعة ويمتلك صلاحية التحدث."
         )
 
-# ==================== [ معالجة المدخلات والنصوص من المشرف والمدراء ] ====================
+# ==================== [ معالجة المدخلات والنصوص ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def process_inputs(event):
@@ -234,7 +232,6 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    # استلام الملف الصوتي وحفظه
     if action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
@@ -244,7 +241,6 @@ async def process_inputs(event):
                 os.makedirs("voices", exist_ok=True)
                 file_path = f"voices/{p_id}_{v_type}.ogg"
                 
-                # تحميل مقطع الصوت محلياً
                 await event.download_media(file=file_path)
 
                 if p_id not in db["providers"]:
@@ -264,7 +260,6 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال مقطع صوتي / فويس حصراً.")
         return
 
-    # ربط الحساب المساعد
     if action == "awaiting_assistant_session":
         session_str = text.strip()
         try:
@@ -287,7 +282,6 @@ async def process_inputs(event):
             await event.reply(f"❌ حدث خطأ أثناء فحص الـ Session:\n`{e}`")
         user_states.pop(user_id, None)
 
-    # إضافة مطور
     elif action == "awaiting_dev_id":
         try:
             new_dev = int(text)
@@ -299,14 +293,12 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
-    # تغيير يوزر المطور
     elif action == "awaiting_dev_user":
         db["dev_username"] = text.replace("@", "")
         save_data(db)
         await event.reply(f"✅ تم تحديث يوزر المطور إلى: @{db['dev_username']}")
         user_states.pop(user_id, None)
 
-    # حظر مستخدم
     elif action == "awaiting_block_id":
         try:
             target_id = int(text)
@@ -318,12 +310,10 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
-    # إضافة مقدم - خطوة 1
     elif action == "awaiting_provider_id":
         user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
         await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**: ")
 
-    # إضافة مقدم - خطوة 2
     elif action == "awaiting_provider_name":
         p_id = state.get("provider_id")
         p_name = text
@@ -430,9 +420,23 @@ async def callback_handler(event):
             await event.answer("✅ تم حذف المقدم بنجاح.", alert=True)
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
 
-# ==================== [ تشغيل البوت ] ====================
+# ==================== [ خادم الويب وتوافق Render ] ====================
+
+async def handle(request):
+    return web.Response(text="Bot is running successfully!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح...")
+    print("🚀 تم تشغيل البوت وسيرفر الويب بنجاح...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_web_server())
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
