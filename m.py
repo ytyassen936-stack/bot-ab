@@ -43,7 +43,7 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8436050842:AAFkoQf8a31lj-5OrHMu7apiXFC3Dqc02ds")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
