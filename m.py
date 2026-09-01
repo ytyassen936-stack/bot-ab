@@ -9,7 +9,7 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
 
-# مكتبة تشغيل الصوت في المكالمات الجماعية
+# مكتبة تشغيل الصوت في المكالمات الجماعية (إصدار v2.x)
 from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioPiped
 
@@ -217,7 +217,7 @@ async def start_voice_training(event):
         call_py = PyTgCalls(assistant)
         await call_py.start()
 
-        await call_py.join_group_call(
+        await call_py.play(
             chat_id,
             AudioPiped(file_to_play)
         )
@@ -482,3 +482,4 @@ if __name__ == "__main__":
     print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
