@@ -1,6 +1,8 @@
 import os
 import json
+import re
 import threading
+from collections import defaultdict
 from flask import Flask
 from waitress import serve
 from telethon import TelegramClient, events, Button
@@ -47,7 +49,7 @@ DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
 bot = TelegramClient("VoiceTrainingBot", API_ID, API_HASH)
 
-# ==================== [ قاعدة البيانات ] ====================
+# ==================== [ قاعدة البيانات والذاكرة المؤقتة ] ====================
 DATA_FILE = "bot_database.json"
 
 def load_data():
@@ -77,6 +79,23 @@ def save_data(db_data):
 db = load_data()
 user_states = {}
 temp_clients = {}
+chat_history_buffer = defaultdict(list)  # لحفظ آخر 3 رسائل منفصلة في الكروب
+
+# ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
+
+def normalize_text(text):
+    if not text:
+        return ""
+    # إزالة المسافات والرموز والتشكيل لمطابقة الكلمات المفككة
+    text = re.sub(r'[\s\-_.\u064B-\u0652]', '', text)
+    return text.lower()
+
+def extract_numbers(text):
+    if not text:
+        return ""
+    # استخراج كافة الأرقام وتجميعها (تتعامل مع الأرقام المفككة أو المدبلة)
+    digits = re.findall(r'\d+', text)
+    return "".join(digits)
 
 # ==================== [ الأزرار واللوحات ] ====================
 
@@ -205,8 +224,6 @@ async def activate_group(event):
     ]
     await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nأرسل الان: `ابداء التدريب الصوتي` أو `انزل بل كروب`", buttons=buttons)
 
-# ==================== [ بدء التدريب الصوتي داخل الكروب ] ====================
-
 @bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي|انزل بل كروب|انزل بالكروب)$"))
 async def start_voice_training_group(event):
     if event.is_private:
@@ -221,7 +238,7 @@ async def start_voice_training_group(event):
 
     await event.reply("🎙️ **اختر المقدم للبدء في المحادثة الصوتية:**", buttons=group_providers_keyboard())
 
-# ==================== [ استجابة المحادثة مع كلمات الفويسات ] ====================
+# ==================== [ استجابة الدردشة - الكلمات والارقام المفككة والتراكمية ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_chat_trigger(event):
@@ -229,17 +246,49 @@ async def handle_group_chat_trigger(event):
         return
 
     chat_id = event.chat_id
-    text = event.text.strip().lower()
+    raw_text = event.text.strip()
+    
+    # حفظ أخر 3 رسائل تجميعية في الكروب للمطابقة
+    chat_history_buffer[chat_id].append(raw_text)
+    if len(chat_history_buffer[chat_id]) > 3:
+        chat_history_buffer[chat_id].pop(0)
+
+    combined_3_msgs = " ".join(chat_history_buffer[chat_id])
+
+    norm_single = normalize_text(raw_text)
+    norm_combined = normalize_text(combined_3_msgs)
+    
+    digits_single = extract_numbers(raw_text)
+    digits_combined = extract_numbers(combined_3_msgs)
 
     for p_id, p_data in db.get("providers", {}).items():
         voices_dict = p_data.get("voices", {})
         for category in ["numbers", "words", "random"]:
             for item in voices_dict.get(category, []):
-                if item.get("text") and item["text"].lower() == text:
+                target = item.get("text", "")
+                if not target:
+                    continue
+
+                norm_target = normalize_text(target)
+                digits_target = extract_numbers(target)
+
+                matched = False
+                
+                # مطابقة الكلمات (المفككة والمنفصلة)
+                if norm_target and (norm_target == norm_single or norm_target == norm_combined):
+                    matched = True
+
+                # مطابقة الأرقام (المفككة والمدبلة والمقسمة على 3 رسائل)
+                if not matched and digits_target:
+                    if digits_target == digits_single or digits_target == digits_combined:
+                        matched = True
+
+                if matched:
                     file_path = item.get("file")
                     if file_path and os.path.exists(file_path):
                         await event.reply("يمك نقطه")
-                        
+                        chat_history_buffer[chat_id].clear()
+
                         if db.get("assistant_session"):
                             try:
                                 assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
@@ -256,7 +305,7 @@ async def handle_group_chat_trigger(event):
                                 pass
                     return
 
-# ==================== [ معالجة المدخلات من الخاص ] ====================
+# ==================== [ معالجة مدخلات الخاص ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def process_inputs(event):
@@ -284,7 +333,7 @@ async def process_inputs(event):
             user_states[user_id] = {"action": "awaiting_phone_code"}
             await event.reply("📲 **تم إرسال كود التحقق.** أرسل الكود الآن:")
         except Exception as e:
-            await event.reply(f"❌ خطأ:\n`{e}`")
+            await event.reply(f"❌ خطأ عند إرسال الكود:\n`{e}`")
             user_states.pop(user_id, None)
         return
 
@@ -298,19 +347,20 @@ async def process_inputs(event):
         client = data["client"]
         try:
             await client.sign_in(phone=data["phone"], code=code, phone_code_hash=data["phone_code_hash"])
-            db["assistant_session"] = client.session.save()
+            session_str = client.session.save()
+            db["assistant_session"] = session_str
             save_data(db)
             me = await client.get_me()
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(f"✅ **تم تسجيل الدخول لـ {me.first_name} بنجاح!**")
+            await event.reply(f"✅ **تم تسجيل الدخول للحساب المساعد ({me.first_name}) بنجاح!**")
         except Exception as e:
             if "SessionPasswordNeededError" in str(e) or "two-step" in str(e).lower():
                 user_states[user_id] = {"action": "awaiting_2fa_password"}
                 await event.reply("🔒 **أرسل كلمة المرور للتحقق بخطوتين:**")
             else:
-                await event.reply(f"❌ خطأ:\n`{e}`")
+                await event.reply(f"❌ خطأ تسجيل الدخول:\n`{e}`")
         return
 
     elif action == "awaiting_2fa_password":
@@ -321,13 +371,14 @@ async def process_inputs(event):
         client = data["client"]
         try:
             await client.sign_in(password=text)
-            db["assistant_session"] = client.session.save()
+            session_str = client.session.save()
+            db["assistant_session"] = session_str
             save_data(db)
             me = await client.get_me()
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(f"✅ **تم تسجيل الدخول لـ {me.first_name} بنجاح!**")
+            await event.reply(f"✅ **تم تسجيل الدخول للحساب المساعد ({me.first_name}) بنجاح!**")
         except Exception as e:
             await event.reply(f"❌ كلمة المرور غير صحيحة:\n`{e}`")
             user_states.pop(user_id, None)
@@ -378,20 +429,21 @@ async def process_inputs(event):
         return
 
     elif action == "awaiting_assistant_session":
+        session_candidate = text.strip()
         try:
-            temp_client = TelegramClient(StringSession(text.strip()), API_ID, API_HASH)
+            temp_client = TelegramClient(StringSession(session_candidate), API_ID, API_HASH)
             await temp_client.connect()
             if await temp_client.is_user_authorized():
                 me = await temp_client.get_me()
-                db["assistant_session"] = text.strip()
+                db["assistant_session"] = session_candidate
                 save_data(db)
                 await temp_client.disconnect()
-                await event.reply(f"✅ **تم ربط الحساب ({me.first_name}) بنجاح!**")
+                await event.reply(f"✅ **تم ربط الحساب المساعد ({me.first_name}) بنجاح!**")
             else:
                 await temp_client.disconnect()
-                await event.reply("❌ كود الجلسة غير صالح.")
+                await event.reply("❌ كود الجلسة (Session) غير صالح أو منتهي.")
         except Exception as e:
-            await event.reply(f"❌ خطأ:\n`{e}`")
+            await event.reply(f"❌ خطأ أثناء تجربة الجلسة:\n`{e}`")
         user_states.pop(user_id, None)
 
     elif action == "awaiting_dev_id":
@@ -456,10 +508,10 @@ async def callback_handler(event):
             await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
         elif data == "login_by_phone" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_phone_number"}
-            await event.edit("📞 **أرسل رقم هاتف الحساب المساعد:**")
+            await event.edit("📞 **أرسل رقم هاتف الحساب المساعد (مع رمز الدولة):**")
         elif data == "add_assistant_session" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_assistant_session"}
-            await event.edit("🔑 **أرسل كود الـ String Session:**")
+            await event.edit("🔑 **أرسل كود الـ String Session الحجم الكامل:**")
         elif data == "remove_assistant" and user_id in db["developers"]:
             db["assistant_session"] = None
             save_data(db)
@@ -527,7 +579,7 @@ async def callback_handler(event):
                 elif hasattr(call_py, 'play'):
                     await call_py.play(chat_id, stream)
 
-                await event.edit(f"✅ **بدأ التدريب الصوتي في المجموعة!**\nالكلمة المطلوبة: `{voices_list[0].get('text', '')}`")
+                await event.edit(f"✅ **بدأ التدريب الصوتي في المجموعة!**\nالكلمة/الرقم المطلوب: `{voices_list[0].get('text', '')}`")
             except Exception as e:
                 await event.edit(f"❌ **تعذر الانضمام:**\n`{e}`")
 
@@ -540,3 +592,4 @@ if __name__ == "__main__":
     print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
