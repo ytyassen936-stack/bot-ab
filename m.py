@@ -86,7 +86,7 @@ active_sessions = {}
 def normalize_text(text):
     if not text:
         return ""
-    text = re.sub(r'[\s\-_.\u064B-\u0652]', '', text)
+    text = re.sub(r'[\s\-_.\u064B-\u0652]', '', str(text))
     text = text.replace('ة', 'ه')
     text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     return text.lower()
@@ -94,7 +94,7 @@ def normalize_text(text):
 def extract_numbers(text):
     if not text:
         return ""
-    digits = re.findall(r'\d+', text)
+    digits = re.findall(r'\d+', str(text))
     return "".join(digits)
 
 # ==================== [ الأزرار واللوحات ] ====================
@@ -138,8 +138,7 @@ def assistant_menu_keyboard():
 
 def provider_settings_keyboard():
     buttons = [
-        [Button.inline("➕ إضافة مقدم", data="add_provider"),
-         Button.inline("🗑️ حذف مقدم", data="remove_provider")]
+        [Button.inline("➕ إضافة مقدم", data="add_provider")]
     ]
     for p_id, p_data in db["providers"].items():
         buttons.append([Button.inline(f"🎙️ {p_data.get('name', p_id)}", data=f"manage_prov_{p_id}")])
@@ -153,9 +152,10 @@ def provider_voices_keyboard(p_id):
     rand_count = len(p_data.get("voices", {}).get("random", []))
 
     return [
-        [Button.inline(f"🔢 أرقام ({num_count} فويس)", data=f"upload_voice_{p_id}_numbers")],
-        [Button.inline(f"📝 كلمات ({word_count} فويس)", data=f"upload_voice_{p_id}_words")],
-        [Button.inline(f"🔀 عشوائي ({rand_count} فويس)", data=f"upload_voice_{p_id}_random")],
+        [Button.inline(f"🔢 أرقام ({num_count})", data=f"upload_voice_{p_id}_numbers"),
+         Button.inline(f"📝 كلمات ({word_count})", data=f"upload_voice_{p_id}_words")],
+        [Button.inline(f"🔀 عشوائي ({rand_count})", data=f"upload_voice_{p_id}_random")],
+        [Button.inline("🗑️ حذف فويس معين", data=f"delete_voice_{p_id}")],
         [Button.inline("🔙 رجوع لإعدادات المقدمين", data="provider_settings")]
     ]
 
@@ -251,6 +251,8 @@ async def leave_voice_call(event):
 async def stop_and_leave_call(chat_id):
     sess = active_sessions.get(chat_id)
     if sess:
+        if sess.get("timer_task"):
+            sess["timer_task"].cancel()
         try:
             call_py = sess.get("pytgcalls")
             if hasattr(call_py, 'leave_group_call'):
@@ -262,12 +264,37 @@ async def stop_and_leave_call(chat_id):
             pass
         active_sessions.pop(chat_id, None)
 
-# ==================== [ تشغيل الصوت التالي الفوري ] ====================
+# ==================== [ تشغيل الصوت وتأقيت التسكيب التلقائي ] ====================
+
+async def auto_skip_timer(chat_id, expected_idx):
+    await asyncio.sleep(3) # الانتظار 3 ثوانٍ
+    sess = active_sessions.get(chat_id)
+    if not sess:
+        return
+
+    lock = sess["lock"]
+    async with lock:
+        # التأكد أن السؤال لم يتم الإجابة عليه أثناء الثواني الـ 3
+        if sess["index"] == expected_idx:
+            queue = sess["queue"]
+            if expected_idx < len(queue):
+                target_item = queue[expected_idx]
+                target_text = target_item.get("text", "")
+                
+                await bot.send_message(chat_id, f"⚠️ **تم تسكيب الصوتية:** `{target_text}` (محد جاوب)")
+                
+                sess["index"] += 1
+                await play_current_voice(chat_id)
 
 async def play_current_voice(chat_id):
     sess = active_sessions.get(chat_id)
     if not sess:
         return
+
+    # الغاء المؤقت السابق إن وجد
+    if sess.get("timer_task"):
+        sess["timer_task"].cancel()
+        sess["timer_task"] = None
 
     idx = sess["index"]
     queue = sess["queue"]
@@ -298,7 +325,10 @@ async def play_current_voice(chat_id):
         except Exception:
             pass
 
-# ==================== [ مانع التكرار ومنع انتشار الحدث ] ====================
+    # بدء مؤقت 3 ثوانٍ للتسكيب التلقائي
+    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
+
+# ==================== [ استجابة الدردشة والمقارنة ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
@@ -343,10 +373,9 @@ async def handle_group_chat_trigger(event):
             sess["index"] += 1
             await event.reply("يمك نقطه")
             await play_current_voice(chat_id)
-            # إيقاف انتشار هذا الحدث نهائياً لعدم تكرار المعالجة
             raise events.StopPropagation
 
-# ==================== [ معالجة مدخلات الخاص للمطور ] ====================
+# ==================== [ معالجة المدخلات والحذف ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def process_inputs(event):
@@ -364,7 +393,39 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    if action == "awaiting_phone_number":
+    if action == "awaiting_voice_to_delete":
+        p_id = state.get("provider_id")
+        to_delete = text.strip()
+        
+        provider = db["providers"].get(p_id, {})
+        voices_db = provider.get("voices", {})
+        
+        deleted_count = 0
+        for cat in ["numbers", "words", "random"]:
+            if cat in voices_db:
+                new_list = []
+                for item in voices_db[cat]:
+                    if item.get("text", "").strip() == to_delete:
+                        deleted_count += 1
+                        # حذف الملف الصوتي إن وجد
+                        if os.path.exists(item.get("file", "")):
+                            try:
+                                os.remove(item.get("file", ""))
+                            except Exception:
+                                pass
+                    else:
+                        new_list.append(item)
+                voices_db[cat] = new_list
+
+        save_data(db)
+        user_states.pop(user_id, None)
+
+        if deleted_count > 0:
+            await event.reply(f"✅ **تم حذف {deleted_count} فويس يطابق المحتوى:** `{to_delete}`", buttons=provider_voices_keyboard(p_id))
+        else:
+            await event.reply(f"❌ لم يتم العثور على أي فويس بمحتوى: `{to_delete}`", buttons=provider_voices_keyboard(p_id))
+
+    elif action == "awaiting_phone_number":
         phone = text.replace(" ", "")
         try:
             client = TelegramClient(StringSession(), API_ID, API_HASH)
@@ -558,7 +619,11 @@ async def callback_handler(event):
             await event.edit("📥 أرسل **آيدي حساب المقدم**: ")
         elif data.startswith("manage_prov_") and user_id in db["developers"]:
             p_id = data.split("_")[2]
-            await event.edit("⚙️ اختر نوع الفويس لإضافته للمقدم:", buttons=provider_voices_keyboard(p_id))
+            await event.edit("⚙️ اختر نوع الفويس لإضافته أو حذفه للمقدم:", buttons=provider_voices_keyboard(p_id))
+        elif data.startswith("delete_voice_") and user_id in db["developers"]:
+            p_id = data.split("_")[2]
+            user_states[user_id] = {"action": "awaiting_voice_to_delete", "provider_id": p_id}
+            await event.edit("🗑️ أرسل **محتوى الفويس المراد حذفه** (مثلاً أرسل `56` أو الكلمة):")
         elif data.startswith("upload_voice_") and user_id in db["developers"]:
             parts = data.split("_")
             p_id, v_type = parts[2], parts[3]
@@ -602,7 +667,8 @@ async def callback_handler(event):
                     "index": 0,
                     "provider_name": p_name,
                     "category_name": category_ar,
-                    "lock": asyncio.Lock()
+                    "lock": asyncio.Lock(),
+                    "timer_task": None
                 }
 
                 await play_current_voice(chat_id)
