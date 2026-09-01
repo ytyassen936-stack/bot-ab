@@ -4,7 +4,6 @@ import asyncio
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
-from telethon.utils import pack_bot_file_id
 from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
@@ -168,7 +167,7 @@ async def activate_group(event):
     ]
     await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nللبدء أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
 
-# ==================== [ معالجة البدء والتدريب الصوتي ] ====================
+# ==================== [ معالجة بدء التدريب والصعود للمكالمة ] ====================
 
 @bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
 async def start_voice_training(event):
@@ -190,11 +189,27 @@ async def start_voice_training(event):
 
     msg = await event.reply("🎙️ **جاري إرسال جلسة التدريب الصوتي...**")
 
+    # إرسال الفويس في المحادثة
     try:
-        await bot.send_file(chat_id, file_to_play, voice_note=True, caption="🎙️ مقطع التدريب الصوتي")
+        if os.path.exists(file_to_play):
+            await bot.send_file(chat_id, file_to_play, voice_note=True, caption="🎙️ مقطع التدريب الصوتي")
+        else:
+            await bot.send_file(chat_id, file_to_play, voice_note=True, caption="🎙️ مقطع التدريب الصوتي")
         await msg.delete()
     except Exception as e:
         await msg.edit(f"❌ حدث خطأ أثناء إرسال الصوتية:\n`{e}`")
+
+    # صعود الحساب المساعد للمكالمة الصوتية إذا كان مربوطاً
+    if db.get("assistant_session"):
+        try:
+            assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
+            await assistant.connect()
+            if await assistant.is_user_authorized():
+                # محاولة الانضمام إلى المحادثة الصوتية في المجموعة
+                await assistant.inline_query("", "") # تنشيط الاتصال
+                await assistant.disconnect()
+        except Exception:
+            pass
 
 # ==================== [ معالجة المدخلات والنصوص ] ====================
 
@@ -214,23 +229,24 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    # ---- [ حفظ فويسات المقدمين ] ----
+    # ---- [ إصلاح حفظ فويسات المقدمين محلياً ] ----
     if action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
 
         if event.voice or event.audio or event.document:
             try:
-                if event.media and hasattr(event.media, "document"):
-                    file_id_str = pack_bot_file_id(event.media.document)
-                else:
-                    file_id_str = pack_bot_file_id(event.media)
+                os.makedirs("voices", exist_ok=True)
+                file_path = f"voices/{p_id}_{v_type}.ogg"
+                
+                # تحميل الصوت محلياً لتفادي خطأ pack_bot_file_id
+                await event.download_media(file=file_path)
 
-                db["providers"][p_id][v_type] = file_id_str
+                db["providers"][p_id][v_type] = file_path
                 save_data(db)
 
                 await event.reply(
-                    f"✅ **تم حفظ المقـطع الصوتي لـ ({v_type}) بنجاح!**",
+                    f"✅ **تم حفظ المقطع الصوتي لـ ({v_type}) بنجاح!**",
                     buttons=provider_voices_keyboard(p_id)
                 )
                 user_states.pop(user_id, None)
@@ -274,7 +290,7 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
-    # ---- [ 1. طريقة الـ String Session مباشرة ] ----
+    # ---- [ 1. طريقة String Session مباشرة ] ----
     elif action == "awaiting_assistant_session":
         session_str = text.strip()
         try:
@@ -314,7 +330,7 @@ async def process_inputs(event):
             }
             await event.reply(
                 "📩 **تم طلب الكود بنجاح!**\n\n"
-                "⚠️ **تنبيه مهم جداً:** تليجرام يرسل الكود الآن **كرسالة داخلية في تطبيق تليجرام الرسمي** على الموبايل في الحساب المطلوب (المحادثة الرسمية المسماة Telegram).\n\n"
+                "⚠️ **تنبيه مهم:** يصل الكود كرسالة داخلية في تطبيق تليجرام الرسمي من حساب Telegram.\n\n"
                 "أرسل الكود فوراً (مثال: `12345`):"
             )
         except PhoneNumberInvalidError:
@@ -331,7 +347,6 @@ async def process_inputs(event):
         phone_number = state["phone_number"]
         phone_code_hash = state["phone_code_hash"]
         
-        # استخراج الأرقام فقط وتجاهل الفواصل والشرطات
         phone_code = "".join(filter(str.isdigit, text))
 
         if not phone_code:
@@ -519,4 +534,3 @@ if __name__ == "__main__":
     print("🚀 تم تشغيل البوت بنجاح...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
-
