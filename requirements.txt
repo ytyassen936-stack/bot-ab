@@ -1,5 +1,7 @@
 telethon==1.36.0
-py-tgcalls==2.0.0
+py-tgcalls==2.0.0b4
+ntgcalls==1.1.2
 tgcrypto
 ffmpeg-python
-aiohttp
+flask
+waitress
