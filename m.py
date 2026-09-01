@@ -50,6 +50,7 @@ def save_data(db_data):
 
 db = load_data()
 user_states = {}
+temp_clients = {}  # لتخزين كينسيت الهواتف المؤقتة أثناء التسجيل برقم الهاتف
 
 # ==================== [ لوحات التحكم والأزرار الشفافة ] ====================
 
@@ -85,6 +86,7 @@ def dev_keyboard():
 
 def assistant_menu_keyboard():
     return [
+        [Button.inline("📞 تسجيل الدخول برقم الهاتف", data="login_by_phone")],
         [Button.inline("🔑 طريقة كود الـ Session (مباشرة)", data="add_assistant_session")],
         [Button.inline("🗑️ حذف الحساب المساعد الحالي", data="remove_assistant")],
         [Button.inline("🔙 رجوع", data="dev_settings")]
@@ -163,7 +165,7 @@ async def activate_group(event):
     ]
     await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nقم بفتح الاتصال الصوتي أولاً ثم أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
 
-# ==================== [ صعود المكالمة وتشغيل الصوت في الاتصال ] ====================
+# ==================== [ تشغيل الصوت في الاتصال ] ====================
 
 @bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
 async def start_voice_training(event):
@@ -232,7 +234,85 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    if action == "awaiting_voice":
+    # 1. إدخال رقم الهواتف للحساب المساعد
+    if action == "awaiting_phone_number":
+        phone = text
+        try:
+            client = TelegramClient(StringSession(), API_ID, API_HASH)
+            await client.connect()
+            sent = await client.send_code_request(phone)
+            temp_clients[user_id] = {"client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash}
+            user_states[user_id] = {"action": "awaiting_phone_code"}
+            await event.reply("📲 **تم إرسال كود التحقق إلى حسابك في تلغرام.**\n\nأرسل الكود الآن (مع مسافات أو أرقام متصلة):")
+        except Exception as e:
+            await event.reply(f"❌ حدث خطأ أثناء إرسال الكود:\n`{e}`\n\nأعد المحاولة بالضغط على زر تسجيل الدخول برقم الهاتف مجدداً.")
+            user_states.pop(user_id, None)
+        return
+
+    # 2. إدخال كود التحقق المرسل
+    elif action == "awaiting_phone_code":
+        code = text.replace(" ", "")
+        data = temp_clients.get(user_id)
+        if not data:
+            user_states.pop(user_id, None)
+            return await event.reply("❌ انتهت الجلسة المؤقتة. يرجى البدء من جديد.")
+        
+        client = data["client"]
+        phone = data["phone"]
+        phone_code_hash = data["phone_code_hash"]
+
+        try:
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+            session_str = client.session.save()
+            db["assistant_session"] = session_str
+            save_data(db)
+            me = await client.get_me()
+            await client.disconnect()
+            temp_clients.pop(user_id, None)
+            user_states.pop(user_id, None)
+            await event.reply(
+                f"✅ **تم تسجيل الدخول وربط الحساب المساعد بنجاح!**\n\n"
+                f"👤 الاسم: **{me.first_name}**\n"
+                f"🆔 الآيدي: `{me.id}`"
+            )
+        except Exception as e:
+            if "SessionPasswordNeededError" in str(e) or "two-step" in str(e).lower():
+                user_states[user_id] = {"action": "awaiting_2fa_password"}
+                await event.reply("🔒 **الحساب محمي بالتحقق بخطوتين (كلمة مرور رئيسية).**\n\nأرسل كلمة المرور الخاصة بحسابك الآن:")
+            else:
+                await event.reply(f"❌ الكود غير صحيح أو حدث خطأ:\n`{e}`")
+        return
+
+    # 3. إدخال كلمة المرور للتحقق بخطوتين (2FA)
+    elif action == "awaiting_2fa_password":
+        password = text
+        data = temp_clients.get(user_id)
+        if not data:
+            user_states.pop(user_id, None)
+            return await event.reply("❌ انتهت الجلسة المؤقتة. يرجى البدء من جديد.")
+        
+        client = data["client"]
+        try:
+            await client.sign_in(password=password)
+            session_str = client.session.save()
+            db["assistant_session"] = session_str
+            save_data(db)
+            me = await client.get_me()
+            await client.disconnect()
+            temp_clients.pop(user_id, None)
+            user_states.pop(user_id, None)
+            await event.reply(
+                f"✅ **تم تسجيل الدخول وتخطي التحقق بخطوتين بنجاح!**\n\n"
+                f"👤 الاسم: **{me.first_name}**\n"
+                f"🆔 الآيدي: `{me.id}`"
+            )
+        except Exception as e:
+            await event.reply(f"❌ كلمة المرور غير صحيحة:\n`{e}`")
+            user_states.pop(user_id, None)
+        return
+
+    # استلام الملف الصوتي وحفظه
+    elif action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
 
@@ -240,7 +320,6 @@ async def process_inputs(event):
             try:
                 os.makedirs("voices", exist_ok=True)
                 file_path = f"voices/{p_id}_{v_type}.ogg"
-                
                 await event.download_media(file=file_path)
 
                 if p_id not in db["providers"]:
@@ -260,7 +339,8 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال مقطع صوتي / فويس حصراً.")
         return
 
-    if action == "awaiting_assistant_session":
+    # ربط الحساب المساعد عن طريق الـ Session String المباشر
+    elif action == "awaiting_assistant_session":
         session_str = text.strip()
         try:
             temp_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
@@ -351,6 +431,10 @@ async def callback_handler(event):
 
     elif data == "assistant_menu" and user_id in db["developers"]:
         await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
+
+    elif data == "login_by_phone" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_phone_number"}
+        await event.edit("📞 **أرسل رقم هاتف الحساب المساعد الآن (مع رمز الدولة، مثلاً: `+9647xxxxxxxxx`):**")
 
     elif data == "add_assistant_session" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_assistant_session"}
