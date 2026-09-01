@@ -4,6 +4,7 @@ import asyncio
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
+from telethon.utils import pack_bot_file_id
 from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneCodeInvalidError,
@@ -13,12 +14,12 @@ from telethon.errors import (
 )
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
-API_ID = 34733680              # ضع API_ID الخاص بك هنا (رقم)
-API_HASH = "dc47a14a8d693f8afbb73237d2ad7de8"      # ضع API_HASH الخاص بك هنا
-BOT_TOKEN = "8989979653:AAFIc8-0CGN-8403v6B1chNs3MyRU56Dtdk"    # ضع توكن البوت هنا
+API_ID = int(os.environ.get("API_ID", 34733680))            # ضع API_ID الخاص بك
+API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")       # ضع API_HASH الخاص بك
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAFIc8-0CGN-8403v6B1chNs3MyRU56Dtdk")    # ضع BOT_TOKEN الخاص بك
 
-SUDO_ID = 7493679412             # أيدي المطور الأساسي (رقم)
-DEV_USERNAME = "XX7X6"  # يوزر المطور بدون @
+SUDO_ID = int(os.environ.get("SUDO_ID", 7493679412))          # آيدي المطور الأساسي
+DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6") # يوزر المطور بدون @
 
 bot = TelegramClient("VoiceTrainingBot", API_ID, API_HASH)
 
@@ -43,8 +44,11 @@ def load_data():
     }
 
 def save_data(db_data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(db_data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(db_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Error saving database: {e}")
 
 db = load_data()
 user_states = {}
@@ -75,8 +79,7 @@ def dev_keyboard():
          Button.inline("👤 تغيير يوزر المطور", data="change_dev_user")],
         [Button.inline(f"📱 إضافة حساب مساعد ({assistant_status})", data="add_assistant"),
          Button.inline("🚫 حظر شخص", data="block_user")],
-        [Button.inline("📢 إذاعة", data="broadcast"),
-         Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
+        [Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
         [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"),
          Button.inline("📦 نسخ احتياطي", data="take_backup")],
         [Button.inline("🔙 رجوع", data="main_menu")]
@@ -175,7 +178,7 @@ async def start_voice_training(event):
     if not file_to_play:
         return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي مسجل في إعدادات المقدمين.")
 
-    msg = await event.reply("🎙️ **جاري بدء جلسة التدريب الصوتي...**")
+    msg = await event.reply("🎙️ **جاري إرسال جلسة التدريب الصوتي...**")
 
     try:
         await bot.send_file(chat_id, file_to_play, voice_note=True, caption="🎙️ مقطع التدريب الصوتي")
@@ -183,11 +186,11 @@ async def start_voice_training(event):
     except Exception as e:
         await msg.edit(f"❌ حدث خطأ أثناء إرسال الصوتية:\n`{e}`")
 
-# ==================== [ معالجة مدخلات النصوص للمطور ] ====================
+# ==================== [ معالجة مدخلات النصوص والفويسات ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def process_inputs(event):
-    if not event.is_private or event.text.startswith("/"):
+    if not event.is_private:
         return
 
     user_id = event.sender_id
@@ -200,6 +203,36 @@ async def process_inputs(event):
 
     action = state.get("action")
     text = event.text.strip() if event.text else ""
+
+    # ---- [ حفظ الصوتيات المعدلة والـ File ID الأصلي ] ----
+    if action == "awaiting_voice":
+        p_id = state.get("provider_id")
+        v_type = state.get("voice_type")
+
+        if event.voice or event.audio or event.document:
+            try:
+                # استخراج المعرف النصي القابل للتخزين
+                if event.media and hasattr(event.media, "document"):
+                    file_id_str = pack_bot_file_id(event.media.document)
+                else:
+                    file_id_str = pack_bot_file_id(event.media)
+
+                db["providers"][p_id][v_type] = file_id_str
+                save_data(db)
+
+                await event.reply(
+                    f"✅ **تم حفظ المقـطع الصوتي لـ ({v_type}) بنجاح!**",
+                    buttons=provider_voices_keyboard(p_id)
+                )
+                user_states.pop(user_id, None)
+            except Exception as e:
+                await event.reply(f"❌ حدث خطأ أثناء حفظ الملف الصوتي:\n`{e}`")
+        else:
+            await event.reply("❌ يرجى إرسال مقطع صوتي / فويس حصراً.")
+        return
+
+    if text.startswith("/"):
+        return
 
     if action == "awaiting_dev_id":
         try:
@@ -318,23 +351,6 @@ async def process_inputs(event):
         )
         user_states.pop(user_id, None)
 
-    elif action == "awaiting_voice":
-        p_id = state.get("provider_id")
-        v_type = state.get("voice_type")
-
-        if event.voice or event.audio or event.document:
-            file_id = event.media
-            db["providers"][p_id][v_type] = file_id
-            save_data(db)
-
-            await event.reply(
-                f"✅ تم حفظ الملف الصوتي لـ **({v_type})** بنجاح!",
-                buttons=provider_voices_keyboard(p_id)
-            )
-            user_states.pop(user_id, None)
-        else:
-            await event.reply("❌ يرجى إرسال مقطع صوتي / فويس.")
-
 # ==================== [ الأزرار الشفافة Callbacks ] ====================
 
 @bot.on(events.CallbackQuery)
@@ -430,6 +446,7 @@ async def callback_handler(event):
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح...")
+    print("🚀 تم تشغيل البوت بنجاح عبر m.py...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
