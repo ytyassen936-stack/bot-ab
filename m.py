@@ -9,9 +9,9 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
 
-# مكتبة تشغيل الصوت في المكالمات الجماعية (معدلة لتجنب خطأ ImportError)
+# مكتبة تشغيل الصوت في المكالمات الجماعية
 from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
+from pytgcalls.types import AudioPiped
 
 # ==================== [ خادم الويب لـ Render ] ====================
 app = Flask(__name__)
