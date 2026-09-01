@@ -1,7 +1,8 @@
 import os
 import json
-import asyncio
-from aiohttp import web
+import threading
+from flask import Flask
+from waitress import serve
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
@@ -11,13 +12,27 @@ from telethon.sessions import StringSession
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
-# ==================== [ إعدادات البوت الأساسية ] ====================
-API_ID = int(os.environ.get("API_ID", 34733680))            # API_ID الخاص بك
-API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")       # API_HASH الخاص بك
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")    # BOT_TOKEN الخاص بك
+# ==================== [ خادم الويب لـ Render ] ====================
+app = Flask(__name__)
 
-SUDO_ID = int(os.environ.get("SUDO_ID", 7493679412))          # آيدي المطور الأساسي
-DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6") # يوزر المطور بدون @
+@app.route('/')
+def home():
+    return "Bot is running successfully!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    serve(app, host="0.0.0.0", port=port)
+
+# تشغيل خادم الويب في خلفية مستقلة
+threading.Thread(target=run_web_server, daemon=True).start()
+
+# ==================== [ إعدادات البوت الأساسية ] ====================
+API_ID = int(os.environ.get("API_ID", 34733680))
+API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAHs6E9-33n5DdOLtU6hvn4LNW5wgsSRy4Q")
+
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
+DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
 bot = TelegramClient("VoiceTrainingBot", API_ID, API_HASH)
 
@@ -32,7 +47,7 @@ def load_data():
         except Exception:
             pass
     return {
-        "developers": [SUDO_ID],
+        "developers": [ADMIN_ID],
         "blocked_users": [],
         "activated_groups": [],
         "providers": {},
@@ -50,7 +65,7 @@ def save_data(db_data):
 
 db = load_data()
 user_states = {}
-temp_clients = {}  # لتخزين كينسيت الهواتف المؤقتة أثناء التسجيل برقم الهاتف
+temp_clients = {}
 
 # ==================== [ لوحات التحكم والأزرار الشفافة ] ====================
 
@@ -203,7 +218,7 @@ async def start_voice_training(event):
 
         await call_py.join_group_call(
             chat_id,
-            MediaStream(file_to_play, video_flags=MediaStream.Flags.IGNORE)
+            MediaStream(file_to_play)
         )
 
         await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ قراءة الصوتيات في الاتصال!** 🎙️")
@@ -234,7 +249,6 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    # 1. إدخال رقم الهواتف للحساب المساعد
     if action == "awaiting_phone_number":
         phone = text
         try:
@@ -243,19 +257,18 @@ async def process_inputs(event):
             sent = await client.send_code_request(phone)
             temp_clients[user_id] = {"client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash}
             user_states[user_id] = {"action": "awaiting_phone_code"}
-            await event.reply("📲 **تم إرسال كود التحقق إلى حسابك في تلغرام.**\n\nأرسل الكود الآن (مع مسافات أو أرقام متصلة):")
+            await event.reply("📲 **تم إرسال كود التحقق إلى حسابك في تلغرام.**\n\nأرسل الكود الآن:")
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ أثناء إرسال الكود:\n`{e}`\n\nأعد المحاولة بالضغط على زر تسجيل الدخول برقم الهاتف مجدداً.")
+            await event.reply(f"❌ حدث خطأ أثناء إرسال الكود:\n`{e}`")
             user_states.pop(user_id, None)
         return
 
-    # 2. إدخال كود التحقق المرسل
     elif action == "awaiting_phone_code":
         code = text.replace(" ", "")
         data = temp_clients.get(user_id)
         if not data:
             user_states.pop(user_id, None)
-            return await event.reply("❌ انتهت الجلسة المؤقتة. يرجى البدء من جديد.")
+            return await event.reply("❌ انتهت الجلسة المؤقتة.")
         
         client = data["client"]
         phone = data["phone"]
@@ -270,26 +283,21 @@ async def process_inputs(event):
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(
-                f"✅ **تم تسجيل الدخول وربط الحساب المساعد بنجاح!**\n\n"
-                f"👤 الاسم: **{me.first_name}**\n"
-                f"🆔 الآيدي: `{me.id}`"
-            )
+            await event.reply(f"✅ **تم تسجيل الدخول لـ {me.first_name} بنجاح!**")
         except Exception as e:
             if "SessionPasswordNeededError" in str(e) or "two-step" in str(e).lower():
                 user_states[user_id] = {"action": "awaiting_2fa_password"}
-                await event.reply("🔒 **الحساب محمي بالتحقق بخطوتين (كلمة مرور رئيسية).**\n\nأرسل كلمة المرور الخاصة بحسابك الآن:")
+                await event.reply("🔒 **أرسل كلمة المرور للتحقق بخطوتين:**")
             else:
-                await event.reply(f"❌ الكود غير صحيح أو حدث خطأ:\n`{e}`")
+                await event.reply(f"❌ خطأ:\n`{e}`")
         return
 
-    # 3. إدخال كلمة المرور للتحقق بخطوتين (2FA)
     elif action == "awaiting_2fa_password":
         password = text
         data = temp_clients.get(user_id)
         if not data:
             user_states.pop(user_id, None)
-            return await event.reply("❌ انتهت الجلسة المؤقتة. يرجى البدء من جديد.")
+            return await event.reply("❌ انتهت الجلسة.")
         
         client = data["client"]
         try:
@@ -301,17 +309,12 @@ async def process_inputs(event):
             await client.disconnect()
             temp_clients.pop(user_id, None)
             user_states.pop(user_id, None)
-            await event.reply(
-                f"✅ **تم تسجيل الدخول وتخطي التحقق بخطوتين بنجاح!**\n\n"
-                f"👤 الاسم: **{me.first_name}**\n"
-                f"🆔 الآيدي: `{me.id}`"
-            )
+            await event.reply(f"✅ **تم تسجيل الدخول لـ {me.first_name} بنجاح!**")
         except Exception as e:
             await event.reply(f"❌ كلمة المرور غير صحيحة:\n`{e}`")
             user_states.pop(user_id, None)
         return
 
-    # استلام الملف الصوتي وحفظه
     elif action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
@@ -328,18 +331,14 @@ async def process_inputs(event):
                 db["providers"][p_id][v_type] = file_path
                 save_data(db)
 
-                await event.reply(
-                    f"✅ **تم حفظ المقطع الصوتي لـ ({v_type}) بنجاح!**",
-                    buttons=provider_voices_keyboard(p_id)
-                )
+                await event.reply("✅ **تم حفظ المقطع الصوتي بنجاح!**", buttons=provider_voices_keyboard(p_id))
                 user_states.pop(user_id, None)
             except Exception as e:
-                await event.reply(f"❌ حدث خطأ أثناء حفظ الملف الصوتي:\n`{e}`")
+                await event.reply(f"❌ حدث خطأ:\n`{e}`")
         else:
-            await event.reply("❌ يرجى إرسال مقطع صوتي / فويس حصراً.")
+            await event.reply("❌ يرجى إرسال مقطع صوتي / فويس.")
         return
 
-    # ربط الحساب المساعد عن طريق الـ Session String المباشر
     elif action == "awaiting_assistant_session":
         session_str = text.strip()
         try:
@@ -350,16 +349,12 @@ async def process_inputs(event):
                 db["assistant_session"] = session_str
                 save_data(db)
                 await temp_client.disconnect()
-                await event.reply(
-                    f"✅ **تم ربط الحساب المساعد بنجاح!**\n\n"
-                    f"👤 الاسم: **{me.first_name}**\n"
-                    f"🆔 الآيدي: `{me.id}`"
-                )
+                await event.reply(f"✅ **تم ربط الحساب ({me.first_name}) بنجاح!**")
             else:
                 await temp_client.disconnect()
-                await event.reply("❌ كود الـ Session غير صالح أو منتهي الصلاحية.")
+                await event.reply("❌ كود الـ Session غير صالح.")
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ أثناء فحص الـ Session:\n`{e}`")
+            await event.reply(f"❌ خطأ:\n`{e}`")
         user_states.pop(user_id, None)
 
     elif action == "awaiting_dev_id":
@@ -399,11 +394,7 @@ async def process_inputs(event):
         p_name = text
         db["providers"][p_id] = {"name": p_name, "numbers": None, "words": None, "random": None}
         save_data(db)
-
-        await event.reply(
-            f"✅ **تم حفظ المقدم [{p_name}] بنجاح!**",
-            buttons=provider_voices_keyboard(p_id)
-        )
+        await event.reply(f"✅ **تم حفظ المقدم [{p_name}] بنجاح!**", buttons=provider_voices_keyboard(p_id))
         user_states.pop(user_id, None)
 
 # ==================== [ الأزرار الشفافة Callbacks ] ====================
@@ -415,87 +406,63 @@ async def callback_handler(event):
 
     if data == "main_menu":
         await event.edit("القائمة الرئيسية للبوت:", buttons=await main_keyboard(user_id))
-
     elif data == "user_guide":
-        guide_text = (
-            "📖 **دليل التشغيل والتدريب الصوتي:**\n\n"
-            "1️⃣ قم بإضافة البوت للمجموعة وارفعه مشرفاً.\n"
-            "2️⃣ افتح المحادثة الصوتية (Voice Chat) في الكروب.\n"
-            "3️⃣ أرسل أمر `تفعيل` داخل المجموعة.\n"
-            "4️⃣ أرسل `ابداء التدريب الصوتي` ليصعد الحساب المساعد مباشرة إلى المحادثة الصوتية ويقرأ الصوت المقترن."
-        )
+        guide_text = "📖 **دليل التشغيل والتدريب الصوتي:**\n\n1️⃣ أضف البوت وارفعه مشرفاً.\n2️⃣ افتح الاتصال الصوتي في الكروب.\n3️⃣ أرسل `تفعيل` ثم `ابداء التدريب الصوتي`."
         await event.edit(guide_text, buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
-
     elif data == "dev_settings" and user_id in db["developers"]:
         await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
-
     elif data == "assistant_menu" and user_id in db["developers"]:
         await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
-
     elif data == "login_by_phone" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_phone_number"}
-        await event.edit("📞 **أرسل رقم هاتف الحساب المساعد الآن (مع رمز الدولة، مثلاً: `+9647xxxxxxxxx`):**")
-
+        await event.edit("📞 **أرسل رقم هاتف الحساب المساعد (مع رمز الدولة):**")
     elif data == "add_assistant_session" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_assistant_session"}
-        await event.edit("🔑 **أرسل كود الـ String Session للحساب المساعد الآن:**")
-
+        await event.edit("🔑 **أرسل كود الـ String Session للحساب المساعد:**")
     elif data == "remove_assistant" and user_id in db["developers"]:
         db["assistant_session"] = None
         save_data(db)
         await event.answer("✅ تم حذف الحساب المساعد.", alert=True)
         await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
-
     elif data == "add_dev_id" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_dev_id"}
         await event.edit("📥 أرسل **آيدي الحساب (ID)** لإضافته كمطور:")
-
     elif data == "change_dev_user" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_dev_user"}
         await event.edit("👤 أرسل **يوزر حسابك الجديد** بدون @:")
-
     elif data == "block_user" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_block_id"}
         await event.edit("🚫 أرسل **آيدي المستخدم** المراد حظره:")
-
     elif data == "toggle_free_mode" and user_id in db["developers"]:
         db["free_mode"] = not db.get("free_mode", True)
         save_data(db)
         await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
-
     elif data == "take_backup" and user_id in db["developers"]:
         save_data(db)
         if os.path.exists(DATA_FILE):
-            await bot.send_file(user_id, DATA_FILE, caption="📦 **ملف النسخة الاحتياطية لقاعدة البيانات.**")
+            await bot.send_file(user_id, DATA_FILE, caption="📦 **ملف النسخة الاحتياطية.**")
             await event.answer("✅ تم إرسال النسخة الاحتياطية!", alert=True)
-
     elif data == "provider_settings" and user_id in db["developers"]:
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
-
     elif data == "add_provider" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_provider_id"}
         await event.edit("📥 أرسل **آيدي حساب المقدم**: ")
-
     elif data.startswith("manage_prov_") and user_id in db["developers"]:
         p_id = data.split("_")[2]
         await event.edit("⚙️ اختر نوع الصوتية لرفعها للمقدم:", buttons=provider_voices_keyboard(p_id))
-
     elif data.startswith("upload_voice_") and user_id in db["developers"]:
         parts = data.split("_")
         p_id, v_type = parts[2], parts[3]
         user_states[user_id] = {"action": "awaiting_voice", "provider_id": p_id, "voice_type": v_type}
         await event.edit(f"🎙️ أرسل الآن **الفويس الصوتي** لقسم ({v_type}):")
-
     elif data == "remove_provider" and user_id in db["developers"]:
         if not db["providers"]:
             return await event.answer("❌ لا يوجد مقدمين لحذفهم.", alert=True)
-        
         buttons = []
         for p_id, p_data in db["providers"].items():
             buttons.append([Button.inline(f"❌ {p_data.get('name', p_id)}", data=f"del_prov_{p_id}")])
         buttons.append([Button.inline("🔙 رجوع", data="provider_settings")])
         await event.edit("🗑️ اختر المقدم المراد حذفه:", buttons=buttons)
-
     elif data.startswith("del_prov_") and user_id in db["developers"]:
         p_id = data.split("_")[2]
         if p_id in db["providers"]:
@@ -504,23 +471,10 @@ async def callback_handler(event):
             await event.answer("✅ تم حذف المقدم بنجاح.", alert=True)
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
 
-# ==================== [ خادم الويب وتوافق Render ] ====================
-
-async def handle(request):
-    return web.Response(text="Bot is running successfully!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+# ==================== [ التشغيل الأساسي ] ====================
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت وسيرفر الويب بنجاح...")
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_web_server())
+    print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
