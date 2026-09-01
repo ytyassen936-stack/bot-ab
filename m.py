@@ -9,9 +9,9 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
 
-# الاستدعاء الصحيح لإصدار pytgcalls v2.x
+# الاستدعاء المباشر والمستقر لـ pytgcalls v1.2.8
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream
+from pytgcalls.types.input_stream import AudioPiped
 
 # ==================== [ خادم الويب لـ Render ] ====================
 app = Flask(__name__)
@@ -217,10 +217,9 @@ async def start_voice_training(event):
         call_py = PyTgCalls(assistant)
         await call_py.start()
 
-        # الاستخدام الصحيح في v2.x عبر MediaStream
-        await call_py.play(
+        await call_py.join_group_call(
             chat_id,
-            MediaStream(file_to_play)
+            AudioPiped(file_to_play)
         )
 
         await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ التشغيل!** 🎙️")
@@ -464,7 +463,7 @@ async def callback_handler(event):
             buttons = []
             for p_id, p_data in db["providers"].items():
                 buttons.append([Button.inline(f"❌ {p_data.get('name', p_id)}", data=f"del_prov_{p_id}")])
-            buttons.append([Button.inline("🔙 رجوع", data="provider_settings")])
+            buttons.append([Button.inline("🔙 رجوع", data="provider_settings")] )
             await event.edit("🗑️ اختر المقدم المراد حذفه:", buttons=buttons)
         elif data.startswith("del_prov_") and user_id in db["developers"]:
             p_id = data.split("_")[2]
@@ -483,4 +482,3 @@ if __name__ == "__main__":
     print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
-
