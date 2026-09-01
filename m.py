@@ -11,7 +11,8 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneCodeExpiredError,
     SessionPasswordNeededError,
-    PasswordHashInvalidError
+    PasswordHashInvalidError,
+    PhoneCodeEmptyError
 )
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
@@ -78,7 +79,7 @@ def dev_keyboard():
     return [
         [Button.inline("➕ إضافة مطور", data="add_dev_id"),
          Button.inline("👤 تغيير يوزر المطور", data="change_dev_user")],
-        [Button.inline(f"📱 إضافة حساب مساعد ({assistant_status})", data="assistant_menu"),
+        [Button.inline(f"📱 ربط الحساب المساعد ({assistant_status})", data="assistant_menu"),
          Button.inline("🚫 حظر شخص", data="block_user")],
         [Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
         [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"),
@@ -88,8 +89,9 @@ def dev_keyboard():
 
 def assistant_menu_keyboard():
     return [
-        [Button.inline("🔑 ربط بواسطة String Session (موصى به)", data="add_assistant_session")],
-        [Button.inline("📞 ربط بواسطة رقم الهاتف والرمز", data="add_assistant_phone")],
+        [Button.inline("📞 الطريقة العادية (رقم الهاتف والرمز)", data="add_assistant_phone")],
+        [Button.inline("🔑 طريقة كود الـ Session (مباشرة)", data="add_assistant_session")],
+        [Button.inline("🗑️ حذف الحساب المساعد الحالي", data="remove_assistant")],
         [Button.inline("🔙 رجوع", data="dev_settings")]
     ]
 
@@ -194,7 +196,7 @@ async def start_voice_training(event):
     except Exception as e:
         await msg.edit(f"❌ حدث خطأ أثناء إرسال الصوتية:\n`{e}`")
 
-# ==================== [ معالجة مدخلات النصوص والفويسات ] ====================
+# ==================== [ معالجة المدخلات والنصوص ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def process_inputs(event):
@@ -212,7 +214,7 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
-    # ---- [ حفظ الصوتيات المعدلة والـ File ID الأصلي ] ----
+    # ---- [ حفظ فويسات المقدمين ] ----
     if action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
@@ -241,6 +243,7 @@ async def process_inputs(event):
     if text.startswith("/"):
         return
 
+    # ---- [ إدارة المطورين والحظر ] ----
     if action == "awaiting_dev_id":
         try:
             new_dev = int(text)
@@ -271,8 +274,8 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
+    # ---- [ 1. طريقة الـ String Session مباشرة ] ----
     elif action == "awaiting_assistant_session":
-        # ربط الحساب المساعد عبر String Session مباشرة
         session_str = text.strip()
         try:
             temp_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
@@ -282,16 +285,22 @@ async def process_inputs(event):
                 db["assistant_session"] = session_str
                 save_data(db)
                 await temp_client.disconnect()
-                await event.reply(f"✅ **تم ربط الحساب المساعد بنجاح!**\n\n👤 الحساب: **{me.first_name}** (@{me.username or 'بدون_يوزر'})")
+                await event.reply(
+                    f"✅ **تم ربط الحساب المساعد بنجاح!**\n\n"
+                    f"👤 الاسم: **{me.first_name}**\n"
+                    f"🆔 الآيدي: `{me.id}`\n"
+                    f"🌐 المعرف: @{me.username or 'بدون_يوزر'}"
+                )
             else:
                 await temp_client.disconnect()
-                await event.reply("❌ كود الـ Session غير صالح أو تم تسجيل الخروج منه.")
+                await event.reply("❌ كود הـ Session غير صالح أو تم إنهاء الجلسة.")
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ أثناء اختبار الـ Session:\n`{e}`")
+            await event.reply(f"❌ حدث خطأ أثناء اختبار הـ Session:\n`{e}`")
         user_states.pop(user_id, None)
 
+    # ---- [ 2. الطريقة العادية: رقم الهاتف والرمز ] ----
     elif action == "awaiting_assistant_phone":
-        phone_number = text.replace(" ", "")
+        phone_number = text.replace(" ", "").replace("-", "")
         temp_client = TelegramClient(StringSession(), API_ID, API_HASH)
         
         try:
@@ -303,39 +312,54 @@ async def process_inputs(event):
                 "phone_number": phone_number,
                 "phone_code_hash": code_info.phone_code_hash
             }
-            await event.reply("📩 تم إرسال كود التحقيق إلى حسابك في تليجرام.\n\nأرسل **الكود** الآن (افتح تطبيق تليجرام الرسمي لرؤيته):")
+            await event.reply(
+                "📩 **تم طلب الكود بنجاح!**\n\n"
+                "⚠️ **تنبيه مهم جداً:** تليجرام يرسل الكود الآن **كرسالة داخلية في تطبيق تليجرام الرسمي** على الموبايل في الحساب المطلوب (المحادثة الرسمية المسماة Telegram).\n\n"
+                "أرسل الكود فوراً (مثال: `12345`):"
+            )
         except PhoneNumberInvalidError:
-            await event.reply("❌ رقم الهاتف غير صحيح. حاول مرة أخرى.")
+            await temp_client.disconnect()
+            await event.reply("❌ رقم الهاتف غير صحيح. تأكد من كتابة رمز الدولة (مثال: `+9647800000000`).")
             user_states.pop(user_id, None)
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ عند إرسال الكود:\n`{e}`")
+            await temp_client.disconnect()
+            await event.reply(f"❌ حدث خطأ عند طلب الكود:\n`{e}`")
             user_states.pop(user_id, None)
 
     elif action == "awaiting_assistant_code":
         temp_client = state["client"]
         phone_number = state["phone_number"]
         phone_code_hash = state["phone_code_hash"]
-        phone_code = text.replace(" ", "").replace("-", "")
+        
+        # استخراج الأرقام فقط وتجاهل الفواصل والشرطات
+        phone_code = "".join(filter(str.isdigit, text))
+
+        if not phone_code:
+            return await event.reply("❌ يرجى إرسال الكود كأرقام فقط (مثال: `12345`).")
 
         try:
             await temp_client.sign_in(phone=phone_number, code=phone_code, phone_code_hash=phone_code_hash)
             session_string = temp_client.session.save()
+            me = await temp_client.get_me()
             await temp_client.disconnect()
 
             db["assistant_session"] = session_string
             save_data(db)
 
             user_states.pop(user_id, None)
-            await event.reply("✅ **تم تسجيل الدخول وحفظ الحساب المساعد بنجاح!**")
+            await event.reply(
+                f"✅ **تم تسجيل الدخول وحفظ الحساب المساعد بنجاح!**\n\n"
+                f"👤 الحساب: **{me.first_name}** (`{me.id}`)"
+            )
         except SessionPasswordNeededError:
             user_states[user_id]["action"] = "awaiting_assistant_password"
-            await event.reply("🔐 هذا الحساب مدمج بالتحقق بخطوتين.\nأرسل **باسورد الحساب (2FA)**:")
-        except (PhoneCodeInvalidError, PhoneCodeExpiredError):
-            await event.reply("❌ الكود غير صحيح أو منتهي الصلاحية. يرجى البدء من جديد.")
+            await event.reply("🔐 الحساب مدمج بالتحقق بخطوتين (2FA).\n\nأرسل **باسورد الحساب** الآن:")
+        except (PhoneCodeInvalidError, PhoneCodeExpiredError, PhoneCodeEmptyError):
+            await event.reply("❌ الكود غير صحيح أو انتهت صلاحيته. أعد محاولة الربط من جديد.")
             await temp_client.disconnect()
             user_states.pop(user_id, None)
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ:\n`{e}`")
+            await event.reply(f"❌ حدث خطأ أثناء إدخال الكود:\n`{e}`")
             await temp_client.disconnect()
             user_states.pop(user_id, None)
 
@@ -346,20 +370,25 @@ async def process_inputs(event):
         try:
             await temp_client.sign_in(password=password)
             session_string = temp_client.session.save()
+            me = await temp_client.get_me()
             await temp_client.disconnect()
 
             db["assistant_session"] = session_string
             save_data(db)
 
             user_states.pop(user_id, None)
-            await event.reply("✅ **تم التحقق من الباسورد وتسجيل الحساب المساعد بنجاح!**")
+            await event.reply(
+                f"✅ **تم التحقق من الباسورد وربط الحساب المساعد بنجاح!**\n\n"
+                f"👤 الحساب: **{me.first_name}** (`{me.id}`)"
+            )
         except PasswordHashInvalidError:
-            await event.reply("❌ الباسورد غير صحيح. حاول إرساله مرة أخرى:")
+            await event.reply("❌ الباسورد غير صحيح. حاول كتابته وإرساله مرة أخرى:")
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ أثناء فحص الباسورد:\n`{e}`")
+            await event.reply(f"❌ حدث خطأ أثناء التحقق من الباسورد:\n`{e}`")
             await temp_client.disconnect()
             user_states.pop(user_id, None)
 
+    # ---- [ إضافة مقدمين ] ----
     elif action == "awaiting_provider_id":
         user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
         await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**: ")
@@ -401,22 +430,28 @@ async def callback_handler(event):
         await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
 
     elif data == "assistant_menu" and user_id in db["developers"]:
-        await event.edit("📱 **خيارات ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
+        await event.edit("📱 **اختر طريقة ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
 
     elif data == "add_assistant_session" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_assistant_session"}
         await event.edit(
             "🔑 **إضافة حساب مساعد عبر String Session**\n\n"
-            "أرسل كود الـ Session الخاص بالحساب المساعد الآن:"
+            "أرسل كود الـ Session الخاص بالحساب الآن:"
         )
 
     elif data == "add_assistant_phone" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_assistant_phone"}
         await event.edit(
-            "📱 **إضافة حساب مساعد عبر الرقم**\n\n"
-            "أرسل رقم الهاتف مع رمز الدولة الآن.\n"
+            "📞 **إضافة حساب مساعد (الطريقة العادية)**\n\n"
+            "أرسل رقم الهاتف مع مفتاح الدولة الآن.\n"
             "مثال: `+9647800000000`"
         )
+
+    elif data == "remove_assistant" and user_id in db["developers"]:
+        db["assistant_session"] = None
+        save_data(db)
+        await event.answer("✅ تم حذف الحساب المساعد الحالي.", alert=True)
+        await event.edit("📱 **اختر طريقة ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
 
     elif data == "add_dev_id" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_dev_id"}
@@ -481,7 +516,7 @@ async def callback_handler(event):
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح عبر m.py...")
+    print("🚀 تم تشغيل البوت بنجاح...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
 
