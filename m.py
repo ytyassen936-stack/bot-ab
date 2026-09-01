@@ -6,7 +6,7 @@ from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 
-# مكتبات الاتصال الصوتي PyTgCalls
+# مكتبة تشغيل الصوت في المكالمات الجماعية
 from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioQuality
 from pytgcalls.types.input_stream import AudioPiped
@@ -51,7 +51,7 @@ def save_data(db_data):
 db = load_data()
 user_states = {}
 
-# ==================== [ الأزرار الشفافة ] ====================
+# ==================== [ لوحات التحكم والأزرار الشفافة ] ====================
 
 def get_dev_link():
     dev_user = db.get("dev_username", DEV_USERNAME).replace("@", "")
@@ -96,7 +96,7 @@ def provider_settings_keyboard():
          Button.inline("🗑️ حذف مقدم", data="remove_provider")]
     ]
     for p_id, p_data in db["providers"].items():
-        buttons.append([Button.inline(f"🎙️ {p_data['name']}", data=f"manage_prov_{p_id}")])
+        buttons.append([Button.inline(f"🎙️ {p_data.get('name', p_id)}", data=f"manage_prov_{p_id}")])
     buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
     return buttons
 
@@ -128,7 +128,7 @@ async def start_handler(event):
     first_name = sender.first_name if sender else "المستخدم"
     
     await event.reply(
-        f"أهلاً بك **{first_name}** في بوت التدريب الصوتي! 🎙️\n\nاختر من الأزرار أدناه:",
+        f"أهلاً بك **{first_name}** في بوت التدريب الصوتي! 🎙️\n\nاختر من الأزرار أدناه للتحكم:",
         buttons=await main_keyboard(user_id)
     )
 
@@ -161,9 +161,9 @@ async def activate_group(event):
         [Button.inline("📖 دليل الاستخدام", data="user_guide"),
          Button.url("👨‍💻 المطور", get_dev_link())]
     ]
-    await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nللبدء أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
+    await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nقم بفتح الاتصال الصوتي أولاً ثم أرسل: `ابداء التدريب الصوتي`", buttons=buttons)
 
-# ==================== [ الصعود للمكالمة وتشغيل الصوت ] ====================
+# ==================== [ صعود المكالمة وتشغيل الصوت في الاتصال ] ====================
 
 @bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
 async def start_voice_training(event):
@@ -177,7 +177,7 @@ async def start_voice_training(event):
     if not db.get("assistant_session"):
         return await event.reply("❌ لم يتم ربط الحساب المساعد بعد من قبل المطور!")
 
-    # التفتيش عن الصوتية المسجلة
+    # التفتيش عن الصوت المحفوظ
     file_to_play = None
     for p_id, p_data in db.get("providers", {}).items():
         file_to_play = p_data.get("numbers") or p_data.get("words") or p_data.get("random")
@@ -185,35 +185,39 @@ async def start_voice_training(event):
             break
 
     if not file_to_play:
-        return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي محجوز للمقدمين.")
+        return await event.reply("⚠️ لم يتم العثور على أي ملف صوتي محجوز في إعدادات المقدمين.")
 
-    msg = await event.reply("🎙️ **جاري انضمام الحساب المساعد للاتصال الصوتي...**")
+    msg = await event.reply("🎙️ **جاري صعود الحساب المساعد للمكالمة الصوتية...**")
 
     try:
-        # تشغيل عميل الحساب المساعد بواسطة Session
+        # تشغيل العميل الخاص بالحساب المساعد
         assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
         await assistant.connect()
+
+        if not await assistant.is_user_authorized():
+            await assistant.disconnect()
+            return await msg.edit("❌ جلسة الحساب المساعد منتهية أو غير صالحة. يرجى إعادة ربطه من اللوحة.")
 
         call_py = PyTgCalls(assistant)
         await call_py.start()
 
-        # الانضمام مباشرة للمكالمة وتشغيل الصوت كـ Microphone Stream
+        # الانضمام للمكالمة الصوتية المفتوحة داخل الكروب
         await call_py.join_group_call(
             chat_id,
             AudioPiped(file_to_play, AudioQuality.HIGH)
         )
 
-        await msg.edit("✅ **صعد الحساب المساعد للاتصال وهو يقرأ الصوتية الآن!** 🎙️")
+        await msg.edit("✅ **صعد الحساب المساعد إلى المكالمة بنجاح وبدأ قراءة الصوتيات في الاتصال!** 🎙️")
 
     except Exception as e:
         await msg.edit(
-            f"❌ **فشل صعود الحساب للاتصال:**\n`{e}`\n\n"
-            "⚠️ **تأكد من:**\n"
-            "1. فتح المحادثة الصوتية (Voice Chat) في المجموعة قبل كتابة الأمر.\n"
-            "2. الحساب المساعد مضاف كعضو داخل المجموعة ويمتلك صلاحية التحدث."
+            f"❌ **حدث خطأ عند صعود الاتصال الصوتي:**\n`{e}`\n\n"
+            "⚠️ **خطوات التأكد:**\n"
+            "1️⃣ تأكد من **فتح المكالمة الصوتية (Voice Chat)** في الكروب يدوياً أولاً.\n"
+            "2️⃣ تأكد من أن الحساب المساعد موجود في المجموعة ويمتلك صلاحية التحدث."
         )
 
-# ==================== [ معالجة مدخلات المطور ] ====================
+# ==================== [ معالجة المدخلات والنصوص من المشرف والمدراء ] ====================
 
 @bot.on(events.NewMessage(incoming=True))
 async def process_inputs(event):
@@ -231,6 +235,7 @@ async def process_inputs(event):
     action = state.get("action")
     text = event.text.strip() if event.text else ""
 
+    # استلام الملف الصوتي وحفظه
     if action == "awaiting_voice":
         p_id = state.get("provider_id")
         v_type = state.get("voice_type")
@@ -240,7 +245,11 @@ async def process_inputs(event):
                 os.makedirs("voices", exist_ok=True)
                 file_path = f"voices/{p_id}_{v_type}.ogg"
                 
+                # تحميل مقطع الصوت محلياً
                 await event.download_media(file=file_path)
+
+                if p_id not in db["providers"]:
+                    db["providers"][p_id] = {"name": p_id, "numbers": None, "words": None, "random": None}
 
                 db["providers"][p_id][v_type] = file_path
                 save_data(db)
@@ -256,6 +265,7 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال مقطع صوتي / فويس حصراً.")
         return
 
+    # ربط الحساب المساعد
     if action == "awaiting_assistant_session":
         session_str = text.strip()
         try:
@@ -273,41 +283,48 @@ async def process_inputs(event):
                 )
             else:
                 await temp_client.disconnect()
-                await event.reply("❌ كود الـ Session غير صالح.")
+                await event.reply("❌ كود الـ Session غير صالح أو منتهي الصلاحية.")
         except Exception as e:
-            await event.reply(f"❌ حدث خطأ أثناء اختبار الـ Session:\n`{e}`")
+            await event.reply(f"❌ حدث خطأ أثناء فحص الـ Session:\n`{e}`")
         user_states.pop(user_id, None)
 
+    # إضافة مطور
     elif action == "awaiting_dev_id":
         try:
             new_dev = int(text)
-            db["developers"].append(new_dev)
-            save_data(db)
+            if new_dev not in db["developers"]:
+                db["developers"].append(new_dev)
+                save_data(db)
             await event.reply(f"✅ تم إضافة المطور `{new_dev}` بنجاح.")
         except ValueError:
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
+    # تغيير يوزر المطور
     elif action == "awaiting_dev_user":
         db["dev_username"] = text.replace("@", "")
         save_data(db)
         await event.reply(f"✅ تم تحديث يوزر المطور إلى: @{db['dev_username']}")
         user_states.pop(user_id, None)
 
+    # حظر مستخدم
     elif action == "awaiting_block_id":
         try:
             target_id = int(text)
-            db["blocked_users"].append(target_id)
-            save_data(db)
+            if target_id not in db["blocked_users"]:
+                db["blocked_users"].append(target_id)
+                save_data(db)
             await event.reply(f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
         except ValueError:
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
+    # إضافة مقدم - خطوة 1
     elif action == "awaiting_provider_id":
         user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
         await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**: ")
 
+    # إضافة مقدم - خطوة 2
     elif action == "awaiting_provider_name":
         p_id = state.get("provider_id")
         p_name = text
@@ -332,11 +349,11 @@ async def callback_handler(event):
 
     elif data == "user_guide":
         guide_text = (
-            "📖 **دليل التشغيل الصحيح:**\n\n"
-            "1️⃣ اضف البوت وارقيه مشرفاً.\n"
-            "2️⃣ قم بفتح المحادثة الصوتية (Voice Chat) بالكروب.\n"
-            "3️⃣ أرسل امر `تفعيل`.\n"
-            "4️⃣ أرسل `ابداء التدريب الصوتي` وسيصعد الحساب المساعد للاتصال تلقائياً وقراءة الصوتية."
+            "📖 **دليل التشغيل والتدريب الصوتي:**\n\n"
+            "1️⃣ قم بإضافة البوت للمجموعة وارفعه مشرفاً.\n"
+            "2️⃣ افتح المحادثة الصوتية (Voice Chat) في الكروب.\n"
+            "3️⃣ أرسل أمر `تفعيل` داخل المجموعة.\n"
+            "4️⃣ أرسل `ابداء التدريب الصوتي` ليصعد الحساب المساعد مباشرة إلى المحادثة الصوتية ويقرأ الصوت المقترن."
         )
         await event.edit(guide_text, buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
 
@@ -348,12 +365,36 @@ async def callback_handler(event):
 
     elif data == "add_assistant_session" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_assistant_session"}
-        await event.edit("🔑 **أرسل كود الـ String Session للحساب المساعد:**")
+        await event.edit("🔑 **أرسل كود الـ String Session للحساب المساعد الآن:**")
 
     elif data == "remove_assistant" and user_id in db["developers"]:
         db["assistant_session"] = None
         save_data(db)
         await event.answer("✅ تم حذف الحساب المساعد.", alert=True)
+        await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
+
+    elif data == "add_dev_id" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_dev_id"}
+        await event.edit("📥 أرسل **آيدي الحساب (ID)** لإضافته كمطور:")
+
+    elif data == "change_dev_user" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_dev_user"}
+        await event.edit("👤 أرسل **يوزر حسابك الجديد** بدون @:")
+
+    elif data == "block_user" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_block_id"}
+        await event.edit("🚫 أرسل **آيدي المستخدم** المراد حظره:")
+
+    elif data == "toggle_free_mode" and user_id in db["developers"]:
+        db["free_mode"] = not db.get("free_mode", True)
+        save_data(db)
+        await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
+
+    elif data == "take_backup" and user_id in db["developers"]:
+        save_data(db)
+        if os.path.exists(DATA_FILE):
+            await bot.send_file(user_id, DATA_FILE, caption="📦 **ملف النسخة الاحتياطية لقاعدة البيانات.**")
+            await event.answer("✅ تم إرسال النسخة الاحتياطية!", alert=True)
 
     elif data == "provider_settings" and user_id in db["developers"]:
         await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
@@ -364,13 +405,33 @@ async def callback_handler(event):
 
     elif data.startswith("manage_prov_") and user_id in db["developers"]:
         p_id = data.split("_")[2]
-        await event.edit("⚙️ اختر نوع الصوتية لرفعها:", buttons=provider_voices_keyboard(p_id))
+        await event.edit("⚙️ اختر نوع الصوتية لرفعها للمقدم:", buttons=provider_voices_keyboard(p_id))
 
     elif data.startswith("upload_voice_") and user_id in db["developers"]:
         parts = data.split("_")
         p_id, v_type = parts[2], parts[3]
         user_states[user_id] = {"action": "awaiting_voice", "provider_id": p_id, "voice_type": v_type}
         await event.edit(f"🎙️ أرسل الآن **الفويس الصوتي** لقسم ({v_type}):")
+
+    elif data == "remove_provider" and user_id in db["developers"]:
+        if not db["providers"]:
+            return await event.answer("❌ لا يوجد مقدمين لحذفهم.", alert=True)
+        
+        buttons = []
+        for p_id, p_data in db["providers"].items():
+            buttons.append([Button.inline(f"❌ {p_data.get('name', p_id)}", data=f"del_prov_{p_id}")])
+        buttons.append([Button.inline("🔙 رجوع", data="provider_settings")])
+        await event.edit("🗑️ اختر المقدم المراد حذفه:", buttons=buttons)
+
+    elif data.startswith("del_prov_") and user_id in db["developers"]:
+        p_id = data.split("_")[2]
+        if p_id in db["providers"]:
+            del db["providers"][p_id]
+            save_data(db)
+            await event.answer("✅ تم حذف المقدم بنجاح.", alert=True)
+        await event.edit("🎙️ **إعدادات المقدمين:**", buttons=provider_settings_keyboard())
+
+# ==================== [ تشغيل البوت ] ====================
 
 if __name__ == "__main__":
     print("🚀 تم تشغيل البوت بنجاح...")
