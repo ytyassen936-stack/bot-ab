@@ -1,4 +1,4 @@
-telethon
-pytgcalls
+telethon==1.36.0
+pytgcalls==0.9.6
 tgcrypto
 ffmpeg-python
