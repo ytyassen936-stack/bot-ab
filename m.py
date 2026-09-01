@@ -5,6 +5,7 @@ from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.utils import pack_bot_file_id
+from telethon.sessions import StringSession
 from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneCodeInvalidError,
@@ -77,12 +78,19 @@ def dev_keyboard():
     return [
         [Button.inline("➕ إضافة مطور", data="add_dev_id"),
          Button.inline("👤 تغيير يوزر المطور", data="change_dev_user")],
-        [Button.inline(f"📱 إضافة حساب مساعد ({assistant_status})", data="add_assistant"),
+        [Button.inline(f"📱 إضافة حساب مساعد ({assistant_status})", data="assistant_menu"),
          Button.inline("🚫 حظر شخص", data="block_user")],
         [Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
         [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"),
          Button.inline("📦 نسخ احتياطي", data="take_backup")],
         [Button.inline("🔙 رجوع", data="main_menu")]
+    ]
+
+def assistant_menu_keyboard():
+    return [
+        [Button.inline("🔑 ربط بواسطة String Session (موصى به)", data="add_assistant_session")],
+        [Button.inline("📞 ربط بواسطة رقم الهاتف والرمز", data="add_assistant_phone")],
+        [Button.inline("🔙 رجوع", data="dev_settings")]
     ]
 
 def provider_settings_keyboard():
@@ -211,7 +219,6 @@ async def process_inputs(event):
 
         if event.voice or event.audio or event.document:
             try:
-                # استخراج المعرف النصي القابل للتخزين
                 if event.media and hasattr(event.media, "document"):
                     file_id_str = pack_bot_file_id(event.media.document)
                 else:
@@ -264,8 +271,26 @@ async def process_inputs(event):
             await event.reply("❌ يرجى إرسال آيدي رقمي صحيح.")
         user_states.pop(user_id, None)
 
+    elif action == "awaiting_assistant_session":
+        # ربط الحساب المساعد عبر String Session مباشرة
+        session_str = text.strip()
+        try:
+            temp_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+            await temp_client.connect()
+            if await temp_client.is_user_authorized():
+                me = await temp_client.get_me()
+                db["assistant_session"] = session_str
+                save_data(db)
+                await temp_client.disconnect()
+                await event.reply(f"✅ **تم ربط الحساب المساعد بنجاح!**\n\n👤 الحساب: **{me.first_name}** (@{me.username or 'بدون_يوزر'})")
+            else:
+                await temp_client.disconnect()
+                await event.reply("❌ كود الـ Session غير صالح أو تم تسجيل الخروج منه.")
+        except Exception as e:
+            await event.reply(f"❌ حدث خطأ أثناء اختبار الـ Session:\n`{e}`")
+        user_states.pop(user_id, None)
+
     elif action == "awaiting_assistant_phone":
-        from telethon.sessions import StringSession
         phone_number = text.replace(" ", "")
         temp_client = TelegramClient(StringSession(), API_ID, API_HASH)
         
@@ -278,7 +303,7 @@ async def process_inputs(event):
                 "phone_number": phone_number,
                 "phone_code_hash": code_info.phone_code_hash
             }
-            await event.reply("📩 تم إرسال كود التحقيق إلى حسابك في تليجرام.\n\nأرسل **الكود** الآن:")
+            await event.reply("📩 تم إرسال كود التحقيق إلى حسابك في تليجرام.\n\nأرسل **الكود** الآن (افتح تطبيق تليجرام الرسمي لرؤيته):")
         except PhoneNumberInvalidError:
             await event.reply("❌ رقم الهاتف غير صحيح. حاول مرة أخرى.")
             user_states.pop(user_id, None)
@@ -290,7 +315,7 @@ async def process_inputs(event):
         temp_client = state["client"]
         phone_number = state["phone_number"]
         phone_code_hash = state["phone_code_hash"]
-        phone_code = text.replace(" ", "")
+        phone_code = text.replace(" ", "").replace("-", "")
 
         try:
             await temp_client.sign_in(phone=phone_number, code=phone_code, phone_code_hash=phone_code_hash)
@@ -337,7 +362,7 @@ async def process_inputs(event):
 
     elif action == "awaiting_provider_id":
         user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
-        await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**:")
+        await event.reply("👍 ممتاز، أرسل الآن **اسم المقدم**: ")
 
     elif action == "awaiting_provider_name":
         p_id = state.get("provider_id")
@@ -375,6 +400,24 @@ async def callback_handler(event):
     elif data == "dev_settings" and user_id in db["developers"]:
         await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
 
+    elif data == "assistant_menu" and user_id in db["developers"]:
+        await event.edit("📱 **خيارات ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
+
+    elif data == "add_assistant_session" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_assistant_session"}
+        await event.edit(
+            "🔑 **إضافة حساب مساعد عبر String Session**\n\n"
+            "أرسل كود الـ Session الخاص بالحساب المساعد الآن:"
+        )
+
+    elif data == "add_assistant_phone" and user_id in db["developers"]:
+        user_states[user_id] = {"action": "awaiting_assistant_phone"}
+        await event.edit(
+            "📱 **إضافة حساب مساعد عبر الرقم**\n\n"
+            "أرسل رقم الهاتف مع رمز الدولة الآن.\n"
+            "مثال: `+9647800000000`"
+        )
+
     elif data == "add_dev_id" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_dev_id"}
         await event.edit("📥 أرسل **آيدي الحساب (ID)** لإضافته كمطور:")
@@ -382,14 +425,6 @@ async def callback_handler(event):
     elif data == "change_dev_user" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_dev_user"}
         await event.edit("👤 أرسل **يوزر حسابك الجديد** بدون @:")
-
-    elif data == "add_assistant" and user_id in db["developers"]:
-        user_states[user_id] = {"action": "awaiting_assistant_phone"}
-        await event.edit(
-            "📱 **إضافة حساب مساعد جديد**\n\n"
-            "أرسل رقم الهاتف مع رمز الدولة الآن.\n"
-            "مثال: `+9647800000000`"
-        )
 
     elif data == "block_user" and user_id in db["developers"]:
         user_states[user_id] = {"action": "awaiting_block_id"}
