@@ -42,8 +42,8 @@ threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==================== [ إعدادات البوت الأساسية ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
-API_HASH = os.environ.get("API_HASH", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
+API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -81,10 +81,7 @@ db = load_data()
 user_states = {}
 temp_clients = {}
 active_sessions = {}
-
-# 🛡️ حماية قصوى ضد التكرار: تخزين الأي دي الخاص بالرسائل المعالجة
 processed_msg_ids = set()
-bot_id = None
 
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
@@ -331,36 +328,31 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ استجابة الدردشة - معالجة الحماية القاطعة من التكرار ] ====================
+# ==================== [ استجابة الدردشة - طريقة خفيفة وموثوقة ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: not e.is_private))
 async def handle_group_chat_trigger(event):
     if not event.text:
         return
 
-    # 1. منع تكرار نفس أحدث الرسائل نهائياً باستعمال ID الرسالة
-    unique_msg_identifier = f"{event.chat_id}_{event.id}"
-    if unique_msg_identifier in processed_msg_ids:
-        return
-    processed_msg_ids.add(unique_msg_identifier)
-
-    # تنظيف الذاكرة المؤقتة من المعرفات القديمة لعدم استهلاك الذاكرة
-    if len(processed_msg_ids) > 2000:
-        processed_msg_ids.clear()
-
-    global bot_id
-    if not bot_id:
-        me = await bot.get_me()
-        bot_id = me.id
-
-    # 2. تجاهل رسايل البوت نفسه
-    if event.sender_id == bot_id:
-        return
-
     chat_id = event.chat_id
     sess = active_sessions.get(chat_id)
     if not sess:
         return
+
+    # تجاهل رسائل البوت لمنع التكرار الذاتي
+    me = await bot.get_me()
+    if event.sender_id == me.id:
+        return
+
+    # منع تكرار معالجة الرسالة الواحدة
+    msg_key = f"{chat_id}_{event.id}"
+    if msg_key in processed_msg_ids:
+        return
+    processed_msg_ids.add(msg_key)
+
+    if len(processed_msg_ids) > 1000:
+        processed_msg_ids.clear()
 
     lock = sess["lock"]
     async with lock:
@@ -392,9 +384,7 @@ async def handle_group_chat_trigger(event):
                 matched = True
 
         if matched:
-            # 🛑 زيادة رقم الصوتية فوراً داخل الـ lock حتى لو وصلت رسائل أخرى بنفس اللحظة
             sess["index"] += 1
-
             if sess.get("timer_task"):
                 sess["timer_task"].cancel()
                 sess["timer_task"] = None
@@ -673,7 +663,7 @@ async def callback_handler(event):
         elif data.startswith("select_prov_"):
             p_id = data.split("_")[2]
             p_name = db["providers"].get(p_id, {}).get("name", p_id)
-            await event.edit(f"🎙️ **المقدم المختارات:** {p_name}\nاختر الفئة المطلوبة للتدريب:", buttons=group_types_keyboard(p_id))
+            await event.edit(f"🎙️ **المقدم الاختيارات:** {p_name}\nاختر الفئة المطلوبة للتدريب:", buttons=group_types_keyboard(p_id))
         elif data.startswith("start_play_"):
             parts = data.split("_")
             p_id, category = parts[2], parts[3]
