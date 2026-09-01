@@ -1,1 +1,4 @@
 telethon
+pytgcalls
+tgcrypto
+ffmpeg-python
