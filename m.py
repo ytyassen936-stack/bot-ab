@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import asyncio
 import threading
 from collections import defaultdict
 from flask import Flask
@@ -11,7 +12,7 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
 
-# ==================== [ استدعاء ذكي لمنع ImportError ] ====================
+# ==================== [ استدعاء ذكي لـ PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
 
 AudioStreamClass = None
@@ -81,12 +82,19 @@ user_states = {}
 temp_clients = {}
 chat_history_buffer = defaultdict(list)
 
+# الجلسات النشطة في المكالمات: { chat_id: { "pytgcalls": obj, "assistant": obj, "queue": [], "index": 0, "provider": name, "category": cat } }
+active_sessions = {}
+
 # ==================== [ دوال تنظيف وتحليل النصوص والأرقام ] ====================
 
 def normalize_text(text):
     if not text:
         return ""
+    # إزالة المسافات والرموز والتشكيل
     text = re.sub(r'[\s\-_.\u064B-\u0652]', '', text)
+    # معالجة الهاء والتاء المربوطة والهمزات
+    text = text.replace('ة', 'ه')
+    text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     return text.lower()
 
 def extract_numbers(text):
@@ -172,7 +180,7 @@ def group_types_keyboard(p_id):
         [Button.inline("🔙 إلغاء", data="close_menu")]
     ]
 
-# ==================== [ الأوامر والتفعيل ] ====================
+# ==================== [ الأوامر والتفعيل والخروج ] ====================
 
 @bot.on(events.NewMessage(pattern=r"^/start$", incoming=True))
 async def start_handler(event):
@@ -221,10 +229,10 @@ async def activate_group(event):
         [Button.inline("📖 دليل الاستخدام", data="user_guide"),
          Button.url("👨‍💻 المطور", get_dev_link())]
     ]
-    await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nأرسل الان: `ابداء التدريب الصوتي` أو `انزل بل كروب`", buttons=buttons)
+    await event.reply("✅ **تم تفعيل البوت بنجاح في هذه المجموعة!**\n\nأرسل الان: `ابداء التدريب الصوتي`", buttons=buttons)
     raise events.StopPropagation
 
-@bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي|انزل بل كروب|انزل بالكروب)$"))
+@bot.on(events.NewMessage(pattern=r"^(ابداء التدريب الصوتي|ابدأ التدريب الصوتي)$"))
 async def start_voice_training_group(event):
     if event.is_private:
         return
@@ -239,7 +247,124 @@ async def start_voice_training_group(event):
     await event.reply("🎙️ **اختر المقدم للبدء في المحادثة الصوتية:**", buttons=group_providers_keyboard())
     raise events.StopPropagation
 
-# ==================== [ معالجة مدخلات الخاص بأولوية أعلى ] ====================
+# أمر الخروج الحساب المساعد: "انزل"
+@bot.on(events.NewMessage(pattern=r"^انزل$"))
+async def leave_voice_call(event):
+    if event.is_private:
+        return
+    chat_id = event.chat_id
+    if chat_id in active_sessions:
+        await stop_and_leave_call(chat_id)
+        await event.reply("👋 تم نزول الحساب المساعد من الاتصال الصوتي.")
+    else:
+        await event.reply("⚠️ الحساب المساعد غير موجود في اتصال هذا الكروب حالياً.")
+    raise events.StopPropagation
+
+async def stop_and_leave_call(chat_id):
+    sess = active_sessions.get(chat_id)
+    if sess:
+        try:
+            call_py = sess.get("pytgcalls")
+            if hasattr(call_py, 'leave_group_call'):
+                await call_py.leave_group_call(chat_id)
+            elif hasattr(call_py, 'leave_call'):
+                await call_py.leave_call(chat_id)
+            await sess["assistant"].disconnect()
+        except Exception:
+            pass
+        active_sessions.pop(chat_id, None)
+
+# ==================== [ تشغيل الصوت التالي بالترتيب ] ====================
+
+async def play_current_voice(chat_id):
+    sess = active_sessions.get(chat_id)
+    if not sess:
+        return
+
+    idx = sess["index"]
+    queue = sess["queue"]
+
+    if idx >= len(queue):
+        # انتهت كافة الأرقام/الكلمات للمقدم
+        p_name = sess["provider_name"]
+        cat_name = sess["category_name"]
+        await bot.send_message(chat_id, f"✅ **تم انتهاء الفئة ({cat_name}) للمقدم ({p_name})**")
+        await stop_and_leave_call(chat_id)
+        return
+
+    current_item = queue[idx]
+    file_path = current_item.get("file")
+
+    try:
+        call_py = sess["pytgcalls"]
+        stream = AudioStreamClass(file_path)
+        if hasattr(call_py, 'join_group_call'):
+            await call_py.join_group_call(chat_id, stream)
+        elif hasattr(call_py, 'play'):
+            await call_py.play(chat_id, stream)
+    except Exception:
+        pass
+
+# ==================== [ استجابة الدردشة للمجموعات والتحقق من الإجابة ] ====================
+
+@bot.on(events.NewMessage(func=lambda e: not e.is_private, incoming=True))
+async def handle_group_chat_trigger(event):
+    if not event.text:
+        return
+
+    chat_id = event.chat_id
+    if chat_id not in active_sessions:
+        return
+
+    sess = active_sessions[chat_id]
+    queue = sess["queue"]
+    idx = sess["index"]
+
+    if idx >= len(queue):
+        return
+
+    target_item = queue[idx]
+    target_text = target_item.get("text", "")
+    if not target_text:
+        return
+
+    raw_text = event.text.strip()
+    
+    # تخزين التكرار والرسائل المنفصلة
+    chat_history_buffer[chat_id].append(raw_text)
+    if len(chat_history_buffer[chat_id]) > 3:
+        chat_history_buffer[chat_id].pop(0)
+
+    combined_3_msgs = " ".join(chat_history_buffer[chat_id])
+
+    norm_single = normalize_text(raw_text)
+    norm_combined = normalize_text(combined_3_msgs)
+    norm_target = normalize_text(target_text)
+
+    digits_single = extract_numbers(raw_text)
+    digits_combined = extract_numbers(combined_3_msgs)
+    digits_target = extract_numbers(target_text)
+
+    matched = False
+
+    # 1. مطابقة الكلمات (يدعم تفكيك الحروف وتدبيلها والمقارنة التراكمية ومعالجة ه/ة)
+    if norm_target and (norm_target == norm_single or norm_target == norm_combined or norm_target in norm_single or norm_target in norm_combined):
+        matched = True
+
+    # 2. مطابقة الأرقام (تكرار الأرقام، الأرقام المفككة، المدبلة، المقسمة على 3 رسائل)
+    if not matched and digits_target:
+        if digits_target == digits_single or digits_target == digits_combined or digits_target in digits_single or digits_target in digits_combined:
+            matched = True
+
+    if matched:
+        await event.reply("يمك نقطه")
+        chat_history_buffer[chat_id].clear()
+        
+        # الانتقال للصوت التالي للمقدم
+        sess["index"] += 1
+        await play_current_voice(chat_id)
+
+# ==================== [ معالجة مدخلات الخاص للمطور ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private, incoming=True))
 async def process_inputs(event):
@@ -264,7 +389,7 @@ async def process_inputs(event):
             user_states[user_id] = {"action": "awaiting_phone_code"}
             await event.reply("📲 **تم إرسال كود التحقق.** أرسل الكود الآن:")
         except Exception as e:
-            await event.reply(f"❌ خطأ عند إرسال الكود:\n`{e}`\n\nتأكد من كتابة الرقم بالرمز الدولي (مثل: +964xxxxxxxxx)")
+            await event.reply(f"❌ خطأ عند إرسال الكود:\n`{e}`")
             user_states.pop(user_id, None)
         raise events.StopPropagation
 
@@ -273,7 +398,7 @@ async def process_inputs(event):
         data = temp_clients.get(user_id)
         if not data:
             user_states.pop(user_id, None)
-            return await event.reply("❌ انتهت الجلسة. أعد المحاولة من البداية.")
+            return await event.reply("❌ انتهت الجلسة.")
         
         client = data["client"]
         try:
@@ -289,7 +414,7 @@ async def process_inputs(event):
         except Exception as e:
             if "SessionPasswordNeededError" in str(e) or "two-step" in str(e).lower():
                 user_states[user_id] = {"action": "awaiting_2fa_password"}
-                await event.reply("🔒 **الحساب بحاجة لكلمة سر التحقق بخطوتين.** أرسل كلمة السر الآن:")
+                await event.reply("🔒 **أرسل كلمة السر للتحقق بخطوتين:**")
             else:
                 await event.reply(f"❌ خطأ تسجيل الدخول:\n`{e}`")
                 user_states.pop(user_id, None)
@@ -373,7 +498,7 @@ async def process_inputs(event):
                 await event.reply(f"✅ **تم ربط الحساب المساعد ({me.first_name}) بنجاح!**")
             else:
                 await temp_client.disconnect()
-                await event.reply("❌ كود الجلسة (Session) غير صالح أو منتهي.")
+                await event.reply("❌ كود الجلسة غير صالح.")
         except Exception as e:
             await event.reply(f"❌ خطأ أثناء تجربة الجلسة:\n`{e}`")
         user_states.pop(user_id, None)
@@ -424,69 +549,6 @@ async def process_inputs(event):
         user_states.pop(user_id, None)
         raise events.StopPropagation
 
-# ==================== [ استجابة الدردشة للمجموعات فقط ] ====================
-
-@bot.on(events.NewMessage(func=lambda e: not e.is_private, incoming=True))
-async def handle_group_chat_trigger(event):
-    if not event.text:
-        return
-
-    chat_id = event.chat_id
-    raw_text = event.text.strip()
-    
-    chat_history_buffer[chat_id].append(raw_text)
-    if len(chat_history_buffer[chat_id]) > 3:
-        chat_history_buffer[chat_id].pop(0)
-
-    combined_3_msgs = " ".join(chat_history_buffer[chat_id])
-
-    norm_single = normalize_text(raw_text)
-    norm_combined = normalize_text(combined_3_msgs)
-    
-    digits_single = extract_numbers(raw_text)
-    digits_combined = extract_numbers(combined_3_msgs)
-
-    for p_id, p_data in db.get("providers", {}).items():
-        voices_dict = p_data.get("voices", {})
-        for category in ["numbers", "words", "random"]:
-            for item in voices_dict.get(category, []):
-                target = item.get("text", "")
-                if not target:
-                    continue
-
-                norm_target = normalize_text(target)
-                digits_target = extract_numbers(target)
-
-                matched = False
-                if norm_target and (norm_target == norm_single or norm_target == norm_combined):
-                    matched = True
-
-                if not matched and digits_target:
-                    if digits_target == digits_single or digits_target == digits_combined:
-                        matched = True
-
-                if matched:
-                    file_path = item.get("file")
-                    if file_path and os.path.exists(file_path):
-                        await event.reply("يمك نقطه")
-                        chat_history_buffer[chat_id].clear()
-
-                        if db.get("assistant_session"):
-                            try:
-                                assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
-                                await assistant.connect()
-                                call_py = PyTgCalls(assistant)
-                                await call_py.start()
-
-                                stream = AudioStreamClass(file_path)
-                                if hasattr(call_py, 'join_group_call'):
-                                    await call_py.join_group_call(chat_id, stream)
-                                elif hasattr(call_py, 'play'):
-                                    await call_py.play(chat_id, stream)
-                            except Exception:
-                                pass
-                    return
-
 # ==================== [ الأزرار الشفافة Callbacks ] ====================
 
 @bot.on(events.CallbackQuery)
@@ -501,7 +563,7 @@ async def callback_handler(event):
         elif data == "main_menu":
             await event.edit("القائمة الرئيسية للبوت:", buttons=await main_keyboard(user_id))
         elif data == "user_guide":
-            guide_text = "📖 **دليل التشغيل والتدريب الصوتي:**\n\n1️⃣ أضف البوت وارفعه مشرفاً.\n2️⃣ افتح الاتصال الصوتي في الكروب.\n3️⃣ أرسل `تفعيل` ثم `ابداء التدريب الصوتي` أو `انزل بل كروب`."
+            guide_text = "📖 **دليل التشغيل والتدريب الصوتي:**\n\n1️⃣ أضف البوت وارفعه مشرفاً.\n2️⃣ افتح الاتصال الصوتي في الكروب.\n3️⃣ أرسل `تفعيل` ثم `ابداء التدريب الصوتي`."
             await event.edit(guide_text, buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
         elif data == "dev_settings" and user_id in db["developers"]:
             await event.edit("🛠️ **لوحة إعدادات المطورين:**", buttons=dev_keyboard())
@@ -509,7 +571,7 @@ async def callback_handler(event):
             await event.edit("📱 **ربط الحساب المساعد:**", buttons=assistant_menu_keyboard())
         elif data == "login_by_phone" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_phone_number"}
-            await event.edit("📞 **أرسل رقم هاتف الحساب المساعد مسبوقاً برمز الدولة (مثال: +9647700000000):**")
+            await event.edit("📞 **أرسل رقم هاتف الحساب المساعد (مثال: +9647700000000):**")
         elif data == "add_assistant_session" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_assistant_session"}
             await event.edit("🔑 **أرسل كود الـ String Session الحجم الكامل:**")
@@ -564,25 +626,34 @@ async def callback_handler(event):
             if not voices_list:
                 return await event.answer("⚠️ لا توجد فويسات مرفوعة لهذه الفئة!", alert=True)
 
-            await event.edit("🎙️ **جاري صعود الحساب المساعد للمكالمة الصوتية...**")
-            
+            p_name = db.get("providers", {}).get(p_id, {}).get("name", p_id)
+            category_ar = {"numbers": "الأرقام", "words": "الكلمات", "random": "العشوائي"}.get(category, category)
+
+            await event.edit(f"🎙️ **جاري صعود الحساب المساعد للاتصال لبدء فئة ({category_ar})...**")
+
             try:
-                file_to_play = voices_list[0]["file"]
+                if chat_id in active_sessions:
+                    await stop_and_leave_call(chat_id)
+
                 assistant = TelegramClient(StringSession(db["assistant_session"]), API_ID, API_HASH)
                 await assistant.connect()
 
                 call_py = PyTgCalls(assistant)
                 await call_py.start()
 
-                stream = AudioStreamClass(file_to_play)
-                if hasattr(call_py, 'join_group_call'):
-                    await call_py.join_group_call(chat_id, stream)
-                elif hasattr(call_py, 'play'):
-                    await call_py.play(chat_id, stream)
+                active_sessions[chat_id] = {
+                    "pytgcalls": call_py,
+                    "assistant": assistant,
+                    "queue": voices_list,
+                    "index": 0,
+                    "provider_name": p_name,
+                    "category_name": category_ar
+                }
 
-                await event.edit(f"✅ **بدأ التدريب الصوتي في المجموعة!**\nالكلمة/الرقم المطلوب: `{voices_list[0].get('text', '')}`")
+                await play_current_voice(chat_id)
+                await event.delete()
             except Exception as e:
-                await event.edit(f"❌ **تعذر الانضمام:**\n`{e}`")
+                await event.respond(f"❌ **تعذر الانضمام للمكالمة الصوتية:**\n`{e}`")
 
     except MessageNotModifiedError:
         pass
@@ -593,3 +664,4 @@ if __name__ == "__main__":
     print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
