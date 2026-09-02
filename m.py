@@ -71,7 +71,6 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 
-# أقفال متزامنة للمجموعات
 chat_processing_locks = {}
 
 def get_chat_processing_lock(chat_id):
@@ -176,7 +175,7 @@ async def init_assistant_session():
             if await assistant_client.is_user_authorized():
                 pytgcalls_client = PyTgCalls(assistant_client)
                 await pytgcalls_client.start()
-                print("✅ تم تشغيل الحساب المساعد.")
+                print("✅ تم تشغيل الحساب المساعد بنجاح.")
             else:
                 assistant_client = None
                 pytgcalls_client = None
@@ -262,14 +261,14 @@ async def main_handler(event):
     # 1. الخاص
     if event.is_private:
         if text.startswith("/start"):
-            if user_id in db["blocked_users"]:
+            if user_id in db.get("blocked_users", []):
                 return await event.reply("❌ أنت محظور.")
             user_states.pop(user_id, None)
             sender = await event.get_sender()
             name = sender.first_name if sender else "المستخدم"
             return await event.reply(f"أهلاً بك **{name}** في بوت التدريب الصوتي!", buttons=await main_keyboard(user_id))
 
-        if user_id in db["developers"] and user_id in user_states:
+        if user_id in db.get("developers", []) and user_id in user_states:
             state = user_states[user_id]
             action = state.get("action")
 
@@ -422,7 +421,7 @@ async def main_handler(event):
     # 2. المجموعات
     else:
         if text == "تفعيل":
-            is_admin = user_id in db["developers"]
+            is_admin = user_id in db.get("developers", [])
             if not is_admin:
                 try:
                     part = await bot(GetParticipantRequest(chat_id, user_id))
@@ -437,7 +436,7 @@ async def main_handler(event):
             return await event.reply("✅ تم التفعيل! اكتب: `ابداء التدريب الصوتي`")
 
         elif text in ["ابداء التدريب الصوتي", "ابدأ التدريب الصوتي"]:
-            if chat_id not in db["activated_groups"]:
+            if chat_id not in db.get("activated_groups", []):
                 return await event.reply("⚠️ اكتب `تفعيل` أولاً.")
             if not db.get("providers"):
                 return await event.reply("❌ لا يوجد مقدمين.")
@@ -449,7 +448,6 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # معالجة فورية ومباشرة بدون تعليق مع منع التكرار
         sess = active_sessions.get(chat_id)
         if sess:
             lock = get_chat_processing_lock(chat_id)
@@ -536,54 +534,54 @@ async def callback_handler(event):
             await event.edit("القائمة الرئيسية:", buttons=await main_keyboard(user_id))
         elif data == "user_guide":
             await event.edit("📖 **دليل الاستخدام:**\n1. أضف البوت للمجموعة.\n2. اكتب `تفعيل`.\n3. اكتب `ابداء التدريب الصوتي`.", buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
-        elif data == "dev_settings" and user_id in db["developers"]:
+        elif data == "dev_settings" and user_id in db.get("developers", []):
             await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
-        elif data == "assistant_menu" and user_id in db["developers"]:
+        elif data == "assistant_menu" and user_id in db.get("developers", []):
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
-        elif data == "login_by_phone" and user_id in db["developers"]:
+        elif data == "login_by_phone" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_phone_number"}
             await event.edit("📞 أرسل رقم الهاتف المساعد بالصيغة الدولية (مثال: +9647700000000):")
-        elif data == "remove_assistant" and user_id in db["developers"]:
+        elif data == "remove_assistant" and user_id in db.get("developers", []):
             db["assistant_session"] = None
             save_data(db)
             await event.answer("✅ تم الحذف", alert=True)
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
-        elif data == "add_dev_id" and user_id in db["developers"]:
+        elif data == "add_dev_id" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_dev_id"}
             await event.edit("📥 أرسل ID المطور:")
-        elif data == "change_dev_user" and user_id in db["developers"]:
+        elif data == "change_dev_user" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_dev_user"}
             await event.edit("👤 أرسل اليوزر الجديد:")
-        elif data == "block_user" and user_id in db["developers"]:
+        elif data == "block_user" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_block_id"}
             await event.edit("🚫 أرسل ID المراد حظره:")
-        elif data == "toggle_free_mode" and user_id in db["developers"]:
+        elif data == "toggle_free_mode" and user_id in db.get("developers", []):
             db["free_mode"] = not db.get("free_mode", True)
             save_data(db)
             await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
-        elif data == "take_backup" and user_id in db["developers"]:
+        elif data == "take_backup" and user_id in db.get("developers", []):
             save_data(db)
             if os.path.exists(DATA_FILE):
                 await bot.send_file(user_id, DATA_FILE, caption="📦 النسخة الاحتياطية.")
-        elif data == "provider_settings" and user_id in db["developers"]:
+        elif data == "provider_settings" and user_id in db.get("developers", []):
             await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
-        elif data == "add_provider" and user_id in db["developers"]:
+        elif data == "add_provider" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_provider_id"}
             await event.edit("📥 أرسل معرف (ID) المقدم:")
-        elif data.startswith("manage_prov_") and user_id in db["developers"]:
+        elif data.startswith("manage_prov_") and user_id in db.get("developers", []):
             p_id = data.split("_")[2]
             await event.edit("⚙️ اختر النوع:", buttons=provider_voices_keyboard(p_id))
-        elif data.startswith("delete_provider_") and user_id in db["developers"]:
+        elif data.startswith("delete_provider_") and user_id in db.get("developers", []):
             p_id = data.split("_")[2]
             if p_id in db["providers"]:
                 del db["providers"][p_id]
                 save_data(db)
             await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
-        elif data.startswith("delete_voice_") and user_id in db["developers"]:
+        elif data.startswith("delete_voice_") and user_id in db.get("developers", []):
             p_id = data.split("_")[2]
             user_states[user_id] = {"action": "awaiting_voice_to_delete", "provider_id": p_id}
             await event.edit("🗑️ أرسل نص الفويس المراد حذفه:")
-        elif data.startswith("upload_voice_") and user_id in db["developers"]:
+        elif data.startswith("upload_voice_") and user_id in db.get("developers", []):
             parts = data.split("_")
             user_states[user_id] = {"action": "awaiting_voice", "provider_id": parts[2], "voice_type": parts[3]}
             await event.edit(f"🎙️ أرسل الملف الصوتي لقسم ({parts[3]}):")
@@ -599,7 +597,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ تشغيل السيرفر ותفادي الحظر ] ====================
+# ==================== [ تشغيل السيرفر وتفادي الحظر ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Alive")
@@ -616,19 +614,15 @@ async def main():
     
     print(f"🌐 Web Server Port: {port}")
     
-    while True:
-        try:
-            await bot.start(bot_token=BOT_TOKEN)
-            break
-        except Exception as e:
-            if "FloodWaitError" in str(type(e)) or hasattr(e, 'seconds'):
-                wait_time = getattr(e, 'seconds', 60)
-                print(f"⚠️ حظر مؤقت من تلغرام! جاري الانتظار {wait_time} ثانية...")
-                await asyncio.sleep(wait_time)
-            else:
-                raise e
+    try:
+        await bot.start(bot_token=BOT_TOKEN)
+        print("🤖 تم اتصال البوت بالتلغرام بنجاح!")
+    except Exception as e:
+        print(f"❌ خطأ عند تشغيل البوت: {e}")
+        return
 
     await init_assistant_session()
+    print("🚀 البوت جاهز ويستقبل الرسائل الآن...")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
