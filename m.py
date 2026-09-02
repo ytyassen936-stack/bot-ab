@@ -71,7 +71,7 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 
-# طابور الأقفال لمنع معالجة أكثر من رسالة بنفس الوقت للمجموعة الواحدة
+# طابور الأقفال لمنع التوازي
 chat_processing_locks = {}
 
 def get_chat_processing_lock(chat_id):
@@ -449,42 +449,43 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # التثبيت الحقيقي لمنع التكرار نهائياً مع معالجة حصرية متسلسلة لكل مجموعة
+        # معالجة المطابقة ومنع التكرار نهائياً (Double-Checked Locking)
         sess = active_sessions.get(chat_id)
         if sess:
-            lock = get_chat_processing_lock(chat_id)
-            async with lock:
-                # التأكد مرة أخرى من وجود الجلسة والفهرس الحالي
-                sess = active_sessions.get(chat_id)
-                if not sess:
-                    return
+            queue = sess.get("queue", [])
+            idx = sess.get("index", 0)
 
-                queue = sess["queue"]
-                idx = sess["index"]
+            if idx < len(queue):
+                target_text = queue[idx].get("text", "")
+                norm_single = normalize_text(text)
+                norm_target = normalize_text(target_text)
+                digits_single = extract_numbers(text)
+                digits_target = extract_numbers(target_text)
 
-                if idx < len(queue):
-                    target_text = queue[idx].get("text", "")
-                    norm_single = normalize_text(text)
-                    norm_target = normalize_text(target_text)
-                    digits_single = extract_numbers(text)
-                    digits_target = extract_numbers(target_text)
+                matched = False
+                if norm_target and (norm_target == norm_single or norm_target in norm_single):
+                    matched = True
+                elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
+                    matched = True
 
-                    matched = False
-                    if norm_target and (norm_target == norm_single or norm_target in norm_single):
-                        matched = True
-                    elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
-                        matched = True
+                if matched:
+                    lock = get_chat_processing_lock(chat_id)
+                    async with lock:
+                        current_sess = active_sessions.get(chat_id)
+                        if not current_sess:
+                            return
 
-                    if matched:
-                        # زيادة الفهرس أولاً وبشكل قاطع قبل أي عملية رسالة أو تشغيل
-                        sess["index"] += 1
+                        current_idx = current_sess.get("index", 0)
 
-                        if sess.get("timer_task"):
-                            sess["timer_task"].cancel()
-                            sess["timer_task"] = None
+                        if current_idx == idx and current_idx < len(current_sess["queue"]):
+                            current_sess["index"] += 1
 
-                        await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
-                        await play_current_voice(chat_id)
+                            if current_sess.get("timer_task"):
+                                current_sess["timer_task"].cancel()
+                                current_sess["timer_task"] = None
+
+                            await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
+                            await play_current_voice(chat_id)
 
 # ==================== [ تشغيل الاتصال ] ====================
 
