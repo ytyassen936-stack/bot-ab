@@ -70,12 +70,14 @@ db = load_data()
 user_states = {}
 login_clients = {}
 active_sessions = {}
-chat_locks = {}
 
-def get_chat_lock(chat_id):
-    if chat_id not in chat_locks:
-        chat_locks[chat_id] = asyncio.Lock()
-    return chat_locks[chat_id]
+# طابور الأقفال لمنع معالجة أكثر من رسالة بنفس الوقت للمجموعة الواحدة
+chat_processing_locks = {}
+
+def get_chat_processing_lock(chat_id):
+    if chat_id not in chat_processing_locks:
+        chat_processing_locks[chat_id] = asyncio.Lock()
+    return chat_processing_locks[chat_id]
 
 def normalize_text(text):
     if not text:
@@ -203,7 +205,7 @@ async def auto_skip_timer(chat_id, expected_idx, wait_time):
     sess = active_sessions.get(chat_id)
     if not sess:
         return
-    lock = get_chat_lock(chat_id)
+    lock = get_chat_processing_lock(chat_id)
     async with lock:
         if sess["index"] == expected_idx:
             queue = sess["queue"]
@@ -271,16 +273,13 @@ async def main_handler(event):
             state = user_states[user_id]
             action = state.get("action")
 
-            # حل جذر لإرسال الكود بدون مشاكل
             if action == "awaiting_phone_number":
                 phone = text.replace(" ", "").replace("-", "").strip()
                 msg = await event.reply("🔄 جاري إرسال الكود للرقم...")
                 try:
-                    # إنشاء جلسة جديدة تماماً متصلة مباشرة
                     client = TelegramClient(StringSession(), API_ID, API_HASH)
                     await client.connect()
                     
-                    # إرسال طلب الكود بشكل صريح
                     sent_code = await client.send_code_request(phone, force_sms=False)
                     
                     login_clients[user_id] = {
@@ -289,12 +288,12 @@ async def main_handler(event):
                         "phone_code_hash": sent_code.phone_code_hash
                     }
                     user_states[user_id] = {"action": "awaiting_phone_code"}
-                    return await msg.edit("📲 **تم إرسال الكود في تطبيق تليجرام!**\n\nأدخل الكود هنا (أضف مسافة بين الأرقام مثل `1 2 3 4 5` لتجنب كتم الحساب):")
+                    return await msg.edit("📲 **تم إرسال الكود في تطبيق تليجرام!**\n\nأدخل الكود مع إضافة مسافة بين الأرقام (مثال: `1 2 3 4 5`):")
                 except PhoneNumberInvalidError:
                     return await msg.edit("❌ الرقم غير صحيح! اكتبه بالصيغة الدولية مثل: `+9647700000000`")
                 except Exception as e:
                     user_states.pop(user_id, None)
-                    return await msg.edit(f"❌ فشل طلب الكود: `{e}`\nتأكد من صحة الرقم أو حاول مجدداً بعد دقائق.")
+                    return await msg.edit(f"❌ فشل طلب الكود: `{e}`")
 
             elif action == "awaiting_phone_code":
                 sess_data = login_clients.get(user_id)
@@ -450,19 +449,25 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # التثبيت الكامل للحد من التكرار عبر Lock + إغلاق حقيقي
+        # التثبيت الحقيقي لمنع التكرار نهائياً مع معالجة حصرية متسلسلة لكل مجموعة
         sess = active_sessions.get(chat_id)
         if sess:
-            lock = get_chat_lock(chat_id)
-            if lock.locked():
-                return  # إذا كان القفل شغال بسبب رسالة متزامنة، تجاهل الرسالة الثانية فوراً
-
+            lock = get_chat_processing_lock(chat_id)
             async with lock:
-                queue, idx = sess["queue"], sess["index"]
+                # التأكد مرة أخرى من وجود الجلسة والفهرس الحالي
+                sess = active_sessions.get(chat_id)
+                if not sess:
+                    return
+
+                queue = sess["queue"]
+                idx = sess["index"]
+
                 if idx < len(queue):
                     target_text = queue[idx].get("text", "")
-                    norm_single, norm_target = normalize_text(text), normalize_text(target_text)
-                    digits_single, digits_target = extract_numbers(text), extract_numbers(target_text)
+                    norm_single = normalize_text(text)
+                    norm_target = normalize_text(target_text)
+                    digits_single = extract_numbers(text)
+                    digits_target = extract_numbers(target_text)
 
                     matched = False
                     if norm_target and (norm_target == norm_single or norm_target in norm_single):
@@ -471,9 +476,9 @@ async def main_handler(event):
                         matched = True
 
                     if matched:
-                        # زيادة رقم الصوتية فوراً
+                        # زيادة الفهرس أولاً وبشكل قاطع قبل أي عملية رسالة أو تشغيل
                         sess["index"] += 1
-                        
+
                         if sess.get("timer_task"):
                             sess["timer_task"].cancel()
                             sess["timer_task"] = None
@@ -596,7 +601,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ تشغيل السيرفر وتفادي الحظر ] ====================
+# ==================== [ تشغيل السيرفر ותفادي الحظر ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Alive")
@@ -613,7 +618,6 @@ async def main():
     
     print(f"🌐 Web Server Port: {port}")
     
-    # تفادي الـ FloodWait والتوقف الكلي
     while True:
         try:
             await bot.start(bot_token=BOT_TOKEN)
