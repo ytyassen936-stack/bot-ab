@@ -246,14 +246,10 @@ async def play_current_voice(chat_id):
 
     file_path = queue[idx].get("file")
     try:
-        # إنشاء الستريم مع ضبط الخصائص لتجنب السرعة والتأخير
         if AudioParametersClass:
             stream = AudioStreamClass(file_path, parameters=AudioParametersClass(bitrate=48000))
         else:
             stream = AudioStreamClass(file_path)
-
-        # تأخير مصغر 0.2 ثانية لتأكيد جاهزية ملف الصوت دون إحداث بطء
-        await asyncio.sleep(0.2)
 
         if hasattr(pytgcalls_client, 'change_stream'):
             await pytgcalls_client.change_stream(chat_id, stream)
@@ -265,20 +261,19 @@ async def play_current_voice(chat_id):
         print(f"Error streaming audio: {e}")
 
     duration = get_audio_duration(file_path)
-    # التسكيب أصبح بعد 5.0 ثوانٍ متصلة بعد نهاية الفويس
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 5.0))
 
-def is_duplicate_event(event_id):
-    if event_id in processed_updates:
+def is_duplicate_event(event_key):
+    if event_key in processed_updates:
         return True
-    processed_updates.add(event_id)
-    if len(processed_updates) > 3000:
+    processed_updates.add(event_key)
+    if len(processed_updates) > 5000:
         processed_updates.clear()
     return False
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
-    if event.out or is_duplicate_event(f"pm_{event.id}"):
+    if event.out or is_duplicate_event(f"pm_{event.chat_id}_{event.id}"):
         return
 
     async with global_lock:
@@ -431,10 +426,12 @@ async def private_handler(event):
 
 @bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
-    if event.out or is_duplicate_event(f"grp_{event.id}"):
+    chat_id = event.chat_id
+    
+    # قفل الرسالة فوراً ومنع أي معالجة إضافية في حال إرسال نفس الرسالة 3 مرات
+    if event.out or is_duplicate_event(f"grp_{chat_id}_{event.id}"):
         return
 
-    chat_id = event.chat_id
     text = event.raw_text.strip() if event.raw_text else ""
     user_id = event.sender_id
 
@@ -543,7 +540,7 @@ async def process_start_play(event, p_id, category):
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
-    if is_duplicate_event(f"cb_{event.id}"):
+    if is_duplicate_event(f"cb_{event.chat_id}_{event.id}"):
         return
 
     data = event.data.decode("utf-8")
