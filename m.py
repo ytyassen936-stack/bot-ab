@@ -31,7 +31,7 @@ except ImportError:
 
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758741369:AAFghyYnFHb2Sigqhr5hQDyYH5BF0zNNDVQ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -71,7 +71,7 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 
-# طابور الأقفال لمنع التوازي
+# أقفال متزامنة للمجموعات
 chat_processing_locks = {}
 
 def get_chat_processing_lock(chat_id):
@@ -449,43 +449,40 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # معالجة المطابقة ومنع التكرار نهائياً (Double-Checked Locking)
+        # معالجة فورية ومباشرة بدون تعليق مع منع التكرار
         sess = active_sessions.get(chat_id)
         if sess:
-            queue = sess.get("queue", [])
-            idx = sess.get("index", 0)
+            lock = get_chat_processing_lock(chat_id)
+            async with lock:
+                curr_sess = active_sessions.get(chat_id)
+                if not curr_sess:
+                    return
 
-            if idx < len(queue):
-                target_text = queue[idx].get("text", "")
-                norm_single = normalize_text(text)
-                norm_target = normalize_text(target_text)
-                digits_single = extract_numbers(text)
-                digits_target = extract_numbers(target_text)
+                queue = curr_sess.get("queue", [])
+                idx = curr_sess.get("index", 0)
 
-                matched = False
-                if norm_target and (norm_target == norm_single or norm_target in norm_single):
-                    matched = True
-                elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
-                    matched = True
+                if idx < len(queue):
+                    target_text = queue[idx].get("text", "")
+                    norm_single = normalize_text(text)
+                    norm_target = normalize_text(target_text)
+                    digits_single = extract_numbers(text)
+                    digits_target = extract_numbers(target_text)
 
-                if matched:
-                    lock = get_chat_processing_lock(chat_id)
-                    async with lock:
-                        current_sess = active_sessions.get(chat_id)
-                        if not current_sess:
-                            return
+                    matched = False
+                    if norm_target and (norm_target == norm_single or norm_target in norm_single):
+                        matched = True
+                    elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
+                        matched = True
 
-                        current_idx = current_sess.get("index", 0)
+                    if matched:
+                        curr_sess["index"] += 1
 
-                        if current_idx == idx and current_idx < len(current_sess["queue"]):
-                            current_sess["index"] += 1
+                        if curr_sess.get("timer_task"):
+                            curr_sess["timer_task"].cancel()
+                            curr_sess["timer_task"] = None
 
-                            if current_sess.get("timer_task"):
-                                current_sess["timer_task"].cancel()
-                                current_sess["timer_task"] = None
-
-                            await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
-                            await play_current_voice(chat_id)
+                        await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
+                        await play_current_voice(chat_id)
 
 # ==================== [ تشغيل الاتصال ] ====================
 
