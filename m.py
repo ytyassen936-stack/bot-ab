@@ -2,12 +2,27 @@ import os
 import json
 import re
 import asyncio
+import threading
 from flask import Flask
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError
+
+# ==================== [ خادم الويب الخاص بـ Render ] ====================
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running successfully!", 200
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+# تشغيل الويب في Thread موازي فوراً لتجاوز فحص Port Binding
+threading.Thread(target=run_http_server, daemon=True).start()
 
 # ==================== [ استدعاء PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
@@ -24,14 +39,7 @@ except ImportError:
         except ImportError:
             pass
 
-# ==================== [ خادم الويب ] ====================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-# ==================== [ إعدادات البوت ] ====================
+# ==================== [ إعدادات المتغيرات والبوت ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
@@ -72,7 +80,7 @@ user_states = {}
 temp_clients = {}
 active_sessions = {}
 
-# نظام حظر التكرار البرمجي المباشر
+# نظام الحماية المباشر لمنع تكرار الرسائل والـ Multi-handling
 processed_msg_ids = set()
 global_message_lock = asyncio.Lock()
 
@@ -213,7 +221,7 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ المعالج الموحد المانع للتكرار القطعي ] ====================
+# ==================== [ المعالج الموحد المانع للتكرار قطعيًا ] ====================
 
 @bot.on(events.NewMessage)
 async def unified_message_handler(event):
@@ -266,7 +274,7 @@ async def unified_message_handler(event):
                 elif action == "awaiting_phone_number":
                     phone = text.replace(" ", "")
                     try:
-                        client = TelegramClient(StringSession(), API_ID, API_HASH)
+                        client = TelegramClient(StringSession(), API_ID, API_HASH, connection_retries=5)
                         await client.connect()
                         sent = await client.send_code_request(phone)
                         temp_clients[user_id] = {"client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash}
@@ -274,11 +282,13 @@ async def unified_message_handler(event):
                         return await event.reply("📲 أرسل كود التحقق:")
                     except Exception as e:
                         user_states.pop(user_id, None)
-                        return await event.reply(f"❌ خطأ: `{e}`")
+                        return await event.reply(f"❌ خطأ في طلب الكود: `{e}`")
 
                 elif action == "awaiting_phone_code":
                     data = temp_clients.get(user_id)
-                    if not data: return
+                    if not data:
+                        user_states.pop(user_id, None)
+                        return await event.reply("❌ انتهت الجلسة، حاول التسجيل مجدداً.")
                     try:
                         client = data["client"]
                         await client.sign_in(phone=data["phone"], code=text.replace(" ", ""), phone_code_hash=data["phone_code_hash"])
@@ -287,7 +297,7 @@ async def unified_message_handler(event):
                         await client.disconnect()
                         temp_clients.pop(user_id, None)
                         user_states.pop(user_id, None)
-                        return await event.reply("✅ تم ربط الحساب بنجاح!")
+                        return await event.reply("✅ تم ربط الحساب المساعد بنجاح!")
                     except Exception as e:
                         if "SessionPasswordNeededError" in str(e):
                             user_states[user_id] = {"action": "awaiting_2fa_password"}
@@ -306,7 +316,7 @@ async def unified_message_handler(event):
                         await client.disconnect()
                         temp_clients.pop(user_id, None)
                         user_states.pop(user_id, None)
-                        return await event.reply("✅ تم ربط الحساب بنجاح!")
+                        return await event.reply("✅ تم ربط الحساب المساعد بنجاح!")
                     except Exception as e:
                         user_states.pop(user_id, None)
                         return await event.reply(f"❌ خطأ: `{e}`")
@@ -517,9 +527,10 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ نقطة البدء ] ====================
+# ==================== [ بدء التشغيل المباشر ] ====================
 
 if __name__ == "__main__":
     print("🚀 جاري تشغيل البوت...")
     bot.start(bot_token=BOT_TOKEN)
     bot.run_until_disconnected()
+
