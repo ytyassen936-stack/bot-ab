@@ -2,27 +2,12 @@ import os
 import json
 import re
 import asyncio
-import threading
-from flask import Flask
+from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
-from telethon.errors import MessageNotModifiedError
-
-# ==================== [ خادم الويب الخاص بـ Render ] ====================
-app = Flask(__name__)
-
-@app.route('/')
-def health_check():
-    return "Bot is running successfully!", 200
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-# تشغيل الويب في Thread موازي فوراً لتجاوز فحص Port Binding
-threading.Thread(target=run_http_server, daemon=True).start()
+from telethon.errors import MessageNotModifiedError, SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
 
 # ==================== [ استدعاء PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
@@ -39,7 +24,7 @@ except ImportError:
         except ImportError:
             pass
 
-# ==================== [ إعدادات المتغيرات والبوت ] ====================
+# ==================== [ إعدادات المتغيرات ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
@@ -77,12 +62,10 @@ def save_data(db_data):
 
 db = load_data()
 user_states = {}
-temp_clients = {}
+login_sessions = {}
 active_sessions = {}
 
-# نظام الحماية المباشر لمنع تكرار الرسائل والـ Multi-handling
 processed_msg_ids = set()
-global_message_lock = asyncio.Lock()
 
 def normalize_text(text):
     if not text:
@@ -221,209 +204,251 @@ async def play_current_voice(chat_id):
 
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
-# ==================== [ المعالج الموحد المانع للتكرار قطعيًا ] ====================
+# ==================== [ معالج الرسائل الموحد ] ====================
 
 @bot.on(events.NewMessage)
 async def unified_message_handler(event):
-    async with global_message_lock:
-        msg_key = (event.chat_id, event.id)
-        if msg_key in processed_msg_ids:
-            return
-        processed_msg_ids.add(msg_key)
+    msg_key = (event.chat_id, event.id)
+    if msg_key in processed_msg_ids:
+        return
+    processed_msg_ids.add(msg_key)
 
-        if len(processed_msg_ids) > 1000:
-            processed_msg_ids.clear()
+    if len(processed_msg_ids) > 1000:
+        processed_msg_ids.clear()
 
-        text = event.raw_text.strip() if event.raw_text else ""
-        user_id = event.sender_id
-        chat_id = event.chat_id
+    text = event.raw_text.strip() if event.raw_text else ""
+    user_id = event.sender_id
+    chat_id = event.chat_id
 
-        if event.is_private:
-            if text.startswith("/start"):
-                if user_id in db["blocked_users"]:
-                    return await event.reply("❌ أنت محظور من استخدام هذا البوت.")
+    if event.is_private:
+        if text.startswith("/start"):
+            if user_id in db["blocked_users"]:
+                return await event.reply("❌ أنت محظور من استخدام هذا البوت.")
+            user_states.pop(user_id, None)
+            sender = await event.get_sender()
+            name = sender.first_name if sender else "المستخدم"
+            return await event.reply(f"أهلاً بك **{name}** في بوت التدريب الصوتي! 🎙️", buttons=await main_keyboard(user_id))
+
+        if user_id in db["developers"] and user_id in user_states:
+            state = user_states[user_id]
+            action = state.get("action")
+
+            if action == "awaiting_phone_number":
+                phone = text.replace(" ", "").strip()
+                try:
+                    # إنشاء كلاينت خاص وتسجيل الجلسة
+                    client = TelegramClient(StringSession(), API_ID, API_HASH)
+                    await client.connect()
+                    
+                    sent_code = await client.send_code_request(phone)
+                    
+                    login_sessions[user_id] = {
+                        "client": client,
+                        "phone": phone,
+                        "phone_code_hash": sent_code.phone_code_hash
+                    }
+                    
+                    user_states[user_id] = {"action": "awaiting_phone_code"}
+                    return await event.reply("📲 **تم إرسال الكود!**\nيرجى إرسال الكود الآن (إذا كان الكود يحتوي على أرقام اكتبها بفاصلة أو بشكل عادي):")
+                except Exception as e:
+                    user_states.pop(user_id, None)
+                    return await event.reply(f"❌ حدث خطأ عند إرسال الكود: `{e}`")
+
+            elif action == "awaiting_phone_code":
+                sess_data = login_sessions.get(user_id)
+                if not sess_data:
+                    user_states.pop(user_id, None)
+                    return await event.reply("❌ انتهت مهلة الجلسة، اضغط على ربط الحساب وأعد إدخال الرقم.")
+                
+                client = sess_data["client"]
+                phone = sess_data["phone"]
+                phone_code_hash = sess_data["phone_code_hash"]
+                
+                # تنظيف الكود المدخل من الفواصل أو المسافات
+                clean_code = re.sub(r'\D', '', text)
+                
+                try:
+                    await client.sign_in(phone=phone, code=clean_code, phone_code_hash=phone_code_hash)
+                    
+                    # حفظ جلسة الحساب المساعد
+                    session_string = client.session.save()
+                    db["assistant_session"] = session_string
+                    save_data(db)
+                    
+                    me = await client.get_me()
+                    await client.disconnect()
+                    
+                    login_sessions.pop(user_id, None)
+                    user_states.pop(user_id, None)
+                    
+                    return await event.reply(f"✅ **تم تسجيل الدخول وربط الحساب المساعد بنجاح!**\n👤 اسم الحساب: **{me.first_name}**")
+                
+                except PhoneCodeInvalidError:
+                    return await event.reply("❌ الكود المدخل غير صحيح، تأكد منه وأعد إرساله:")
+                except PhoneCodeExpiredError:
+                    await client.disconnect()
+                    login_sessions.pop(user_id, None)
+                    user_states.pop(user_id, None)
+                    return await event.reply("❌ انتهت صلاحية الكود، أعد طلب التسجيل من جديد.")
+                except SessionPasswordNeededError:
+                    user_states[user_id] = {"action": "awaiting_2fa_password"}
+                    return await event.reply("🔒 الحساب محمي بالتحقق بخطوتين (2FA).\nأرسل كلمة السر الآن:")
+                except Exception as e:
+                    await client.disconnect()
+                    login_sessions.pop(user_id, None)
+                    user_states.pop(user_id, None)
+                    return await event.reply(f"❌ حدث خطأ أثناء التسجيل: `{e}`")
+
+            elif action == "awaiting_2fa_password":
+                sess_data = login_sessions.get(user_id)
+                if not sess_data:
+                    user_states.pop(user_id, None)
+                    return await event.reply("❌ انتهت مهلة الجلسة، حاول التسجيل مجدداً.")
+                
+                client = sess_data["client"]
+                try:
+                    await client.sign_in(password=text)
+                    
+                    session_string = client.session.save()
+                    db["assistant_session"] = session_string
+                    save_data(db)
+                    
+                    me = await client.get_me()
+                    await client.disconnect()
+                    
+                    login_sessions.pop(user_id, None)
+                    user_states.pop(user_id, None)
+                    
+                    return await event.reply(f"✅ **تم تسجيل الدخول بنجاح!**\n👤 الحساب: **{me.first_name}**")
+                except Exception as e:
+                    await client.disconnect()
+                    login_sessions.pop(user_id, None)
+                    user_states.pop(user_id, None)
+                    return await event.reply(f"❌ كلمة السر خاطئة أو حدث خطأ: `{e}`")
+
+            elif action == "awaiting_voice_to_delete":
+                p_id = state.get("provider_id")
+                voices_db = db["providers"].get(p_id, {}).get("voices", {})
+                deleted = 0
+                for cat in ["numbers", "words", "random"]:
+                    if cat in voices_db:
+                        new_list = []
+                        for item in voices_db[cat]:
+                            if item.get("text", "").strip() == text:
+                                deleted += 1
+                                if os.path.exists(item.get("file", "")):
+                                    try: os.remove(item.get("file", ""))
+                                    except Exception: pass
+                            else:
+                                new_list.append(item)
+                        voices_db[cat] = new_list
+                save_data(db)
                 user_states.pop(user_id, None)
-                sender = await event.get_sender()
-                name = sender.first_name if sender else "المستخدم"
-                return await event.reply(f"أهلاً بك **{name}** في بوت التدريب الصوتي! 🎙️", buttons=await main_keyboard(user_id))
+                return await event.reply(f"✅ تم حذف {deleted} فويس." if deleted else "❌ لم يتم العثور على الفويس.", buttons=provider_voices_keyboard(p_id))
 
-            if user_id in db["developers"] and user_id in user_states:
-                state = user_states[user_id]
-                action = state.get("action")
+            elif action == "awaiting_voice":
+                if event.voice or event.audio or event.document:
+                    os.makedirs("voices", exist_ok=True)
+                    p_id, v_type = state.get("provider_id"), state.get("voice_type")
+                    path = f"voices/{p_id}_{v_type}_{os.urandom(4).hex()}.ogg"
+                    await event.download_media(file=path)
+                    user_states[user_id] = {"action": "awaiting_voice_text", "provider_id": p_id, "voice_type": v_type, "file_path": path}
+                    return await event.reply("👍 أرسل النص/الكلمة المطابقة:")
 
-                if action == "awaiting_voice_to_delete":
-                    p_id = state.get("provider_id")
-                    voices_db = db["providers"].get(p_id, {}).get("voices", {})
-                    deleted = 0
-                    for cat in ["numbers", "words", "random"]:
-                        if cat in voices_db:
-                            new_list = []
-                            for item in voices_db[cat]:
-                                if item.get("text", "").strip() == text:
-                                    deleted += 1
-                                    if os.path.exists(item.get("file", "")):
-                                        try: os.remove(item.get("file", ""))
-                                        except Exception: pass
-                                else:
-                                    new_list.append(item)
-                            voices_db[cat] = new_list
+            elif action == "awaiting_voice_text":
+                p_id, v_type, path = state.get("provider_id"), state.get("voice_type"), state.get("file_path")
+                if p_id not in db["providers"]:
+                    db["providers"][p_id] = {"name": p_id, "voices": {"numbers": [], "words": [], "random": []}}
+                db["providers"][p_id]["voices"][v_type].append({"file": path, "text": text})
+                save_data(db)
+                user_states.pop(user_id, None)
+                return await event.reply(f"✅ تم الربط مع: `{text}`", buttons=provider_voices_keyboard(p_id))
+
+            elif action == "awaiting_dev_id":
+                try:
+                    db["developers"].append(int(text))
                     save_data(db)
-                    user_states.pop(user_id, None)
-                    return await event.reply(f"✅ تم حذف {deleted} فويس." if deleted else "❌ لم يتم العثور على الفويس.", buttons=provider_voices_keyboard(p_id))
+                    await event.reply("✅ تم الإضافة.")
+                except ValueError: pass
+                user_states.pop(user_id, None)
+                return
 
-                elif action == "awaiting_phone_number":
-                    phone = text.replace(" ", "")
-                    try:
-                        client = TelegramClient(StringSession(), API_ID, API_HASH, connection_retries=5)
-                        await client.connect()
-                        sent = await client.send_code_request(phone)
-                        temp_clients[user_id] = {"client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash}
-                        user_states[user_id] = {"action": "awaiting_phone_code"}
-                        return await event.reply("📲 أرسل كود التحقق:")
-                    except Exception as e:
-                        user_states.pop(user_id, None)
-                        return await event.reply(f"❌ خطأ في طلب الكود: `{e}`")
+            elif action == "awaiting_dev_user":
+                db["dev_username"] = text.replace("@", "")
+                save_data(db)
+                user_states.pop(user_id, None)
+                return await event.reply("✅ تم التحديث.")
 
-                elif action == "awaiting_phone_code":
-                    data = temp_clients.get(user_id)
-                    if not data:
-                        user_states.pop(user_id, None)
-                        return await event.reply("❌ انتهت الجلسة، حاول التسجيل مجدداً.")
-                    try:
-                        client = data["client"]
-                        await client.sign_in(phone=data["phone"], code=text.replace(" ", ""), phone_code_hash=data["phone_code_hash"])
-                        db["assistant_session"] = client.session.save()
-                        save_data(db)
-                        await client.disconnect()
-                        temp_clients.pop(user_id, None)
-                        user_states.pop(user_id, None)
-                        return await event.reply("✅ تم ربط الحساب المساعد بنجاح!")
-                    except Exception as e:
-                        if "SessionPasswordNeededError" in str(e):
-                            user_states[user_id] = {"action": "awaiting_2fa_password"}
-                            return await event.reply("🔒 أرسل كلمة السر بخطوتين:")
-                        user_states.pop(user_id, None)
-                        return await event.reply(f"❌ خطأ: `{e}`")
-
-                elif action == "awaiting_2fa_password":
-                    data = temp_clients.get(user_id)
-                    if not data: return
-                    try:
-                        client = data["client"]
-                        await client.sign_in(password=text)
-                        db["assistant_session"] = client.session.save()
-                        save_data(db)
-                        await client.disconnect()
-                        temp_clients.pop(user_id, None)
-                        user_states.pop(user_id, None)
-                        return await event.reply("✅ تم ربط الحساب المساعد بنجاح!")
-                    except Exception as e:
-                        user_states.pop(user_id, None)
-                        return await event.reply(f"❌ خطأ: `{e}`")
-
-                elif action == "awaiting_voice":
-                    if event.voice or event.audio or event.document:
-                        os.makedirs("voices", exist_ok=True)
-                        p_id, v_type = state.get("provider_id"), state.get("voice_type")
-                        path = f"voices/{p_id}_{v_type}_{os.urandom(4).hex()}.ogg"
-                        await event.download_media(file=path)
-                        user_states[user_id] = {"action": "awaiting_voice_text", "provider_id": p_id, "voice_type": v_type, "file_path": path}
-                        return await event.reply("👍 أرسل النص/الكلمة المطابقة:")
-
-                elif action == "awaiting_voice_text":
-                    p_id, v_type, path = state.get("provider_id"), state.get("voice_type"), state.get("file_path")
-                    if p_id not in db["providers"]:
-                        db["providers"][p_id] = {"name": p_id, "voices": {"numbers": [], "words": [], "random": []}}
-                    db["providers"][p_id]["voices"][v_type].append({"file": path, "text": text})
+            elif action == "awaiting_block_id":
+                try:
+                    db["blocked_users"].append(int(text))
                     save_data(db)
-                    user_states.pop(user_id, None)
-                    return await event.reply(f"✅ تم الربط مع: `{text}`", buttons=provider_voices_keyboard(p_id))
+                    await event.reply("🚫 تم الحظر.")
+                except ValueError: pass
+                user_states.pop(user_id, None)
+                return
 
-                elif action == "awaiting_dev_id":
-                    try:
-                        db["developers"].append(int(text))
-                        save_data(db)
-                        await event.reply("✅ تم الإضافة.")
-                    except ValueError: pass
-                    user_states.pop(user_id, None)
-                    return
+            elif action == "awaiting_provider_id":
+                user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
+                return await event.reply("أرسل اسم المقدم:")
 
-                elif action == "awaiting_dev_user":
-                    db["dev_username"] = text.replace("@", "")
-                    save_data(db)
-                    user_states.pop(user_id, None)
-                    return await event.reply("✅ تم التحديث.")
+            elif action == "awaiting_provider_name":
+                p_id = state.get("provider_id")
+                db["providers"][p_id] = {"name": text, "voices": {"numbers": [], "words": [], "random": []}}
+                save_data(db)
+                user_states.pop(user_id, None)
+                return await event.reply("✅ تم حفظ المقدم.", buttons=provider_voices_keyboard(p_id))
 
-                elif action == "awaiting_block_id":
-                    try:
-                        db["blocked_users"].append(int(text))
-                        save_data(db)
-                        await event.reply("🚫 تم الحظر.")
-                    except ValueError: pass
-                    user_states.pop(user_id, None)
-                    return
+    else:
+        if text == "تفعيل":
+            is_admin = user_id in db["developers"]
+            if not is_admin:
+                try:
+                    part = await bot(GetParticipantRequest(chat_id, user_id))
+                    if isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator)):
+                        is_admin = True
+                except Exception: pass
+            if not is_admin:
+                return await event.reply("❌ هذا الأمر لمشرفي المجموعة فقط.")
+            if chat_id not in db["activated_groups"]:
+                db["activated_groups"].append(chat_id)
+                save_data(db)
+            return await event.reply("✅ تم تفعيل البوت! اكتب: `ابداء التدريب الصوتي`")
 
-                elif action == "awaiting_provider_id":
-                    user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
-                    return await event.reply("أرسل اسم المقدم:")
+        elif text in ["ابداء التدريب الصوتي", "ابدأ التدريب الصوتي"]:
+            if chat_id not in db["activated_groups"]:
+                return await event.reply("⚠️ اكتب `تفعيل` أولاً.")
+            if not db.get("providers"):
+                return await event.reply("❌ لا يوجد مقدمين.")
+            return await event.reply("🎙️ اختر المقدم:", buttons=group_providers_keyboard())
 
-                elif action == "awaiting_provider_name":
-                    p_id = state.get("provider_id")
-                    db["providers"][p_id] = {"name": text, "voices": {"numbers": [], "words": [], "random": []}}
-                    save_data(db)
-                    user_states.pop(user_id, None)
-                    return await event.reply("✅ تم حفظ المقدم.", buttons=provider_voices_keyboard(p_id))
+        elif text == "انزل":
+            if chat_id in active_sessions:
+                await stop_and_leave_call(chat_id)
+                return await event.reply("👋 تم النزول.")
+            return await event.reply("⚠️ البوت غير متصل.")
 
-        else:
-            if text == "تفعيل":
-                is_admin = user_id in db["developers"]
-                if not is_admin:
-                    try:
-                        part = await bot(GetParticipantRequest(chat_id, user_id))
-                        if isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator)):
-                            is_admin = True
-                    except Exception: pass
-                if not is_admin:
-                    return await event.reply("❌ هذا الأمر لمشرفي المجموعة فقط.")
-                if chat_id not in db["activated_groups"]:
-                    db["activated_groups"].append(chat_id)
-                    save_data(db)
-                return await event.reply("✅ تم تفعيل البوت! اكتب: `ابداء التدريب الصوتي`")
+        sess = active_sessions.get(chat_id)
+        if sess:
+            queue, idx = sess["queue"], sess["index"]
+            if idx < len(queue):
+                target_text = queue[idx].get("text", "")
+                norm_single, norm_target = normalize_text(text), normalize_text(target_text)
+                digits_single, digits_target = extract_numbers(text), extract_numbers(target_text)
 
-            elif text in ["ابداء التدريب الصوتي", "ابدأ التدريب الصوتي"]:
-                if chat_id not in db["activated_groups"]:
-                    return await event.reply("⚠️ اكتب `تفعيل` أولاً.")
-                if not db.get("providers"):
-                    return await event.reply("❌ لا يوجد مقدمين.")
-                return await event.reply("🎙️ اختر المقدم:", buttons=group_providers_keyboard())
+                matched = False
+                if norm_target and (norm_target == norm_single or norm_target in norm_single):
+                    matched = True
+                elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
+                    matched = True
 
-            elif text == "انزل":
-                if chat_id in active_sessions:
-                    await stop_and_leave_call(chat_id)
-                    return await event.reply("👋 تم النزول.")
-                return await event.reply("⚠️ البوت غير متصل.")
-
-            sess = active_sessions.get(chat_id)
-            if sess:
-                queue, idx = sess["queue"], sess["index"]
-                if idx < len(queue):
-                    target_text = queue[idx].get("text", "")
-                    norm_single, norm_target = normalize_text(text), normalize_text(target_text)
-                    digits_single, digits_target = extract_numbers(text), extract_numbers(target_text)
-
-                    matched = False
-                    if norm_target and (norm_target == norm_single or norm_target in norm_single):
-                        matched = True
-                    elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
-                        matched = True
-
-                    if matched:
-                        sess["index"] += 1
-                        if sess.get("timer_task"):
-                            sess["timer_task"].cancel()
-                            sess["timer_task"] = None
-                        await event.reply("يمك نقطه")
-                        await play_current_voice(chat_id)
+                if matched:
+                    sess["index"] += 1
+                    if sess.get("timer_task"):
+                        sess["timer_task"].cancel()
+                        sess["timer_task"] = None
+                    await event.reply("يمك نقطه")
+                    await play_current_voice(chat_id)
 
 # ==================== [ معالج الأزرار Inline ] ====================
 
@@ -527,10 +552,26 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ بدء التشغيل المباشر ] ====================
+# ==================== [ خادم الويب المباشر المدمج مع Event Loop ] ====================
+
+async def handle_ping(request):
+    return web.Response(text="Bot Alive")
+
+async def main():
+    app_web = web.Application()
+    app_web.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    print(f"🌐 HTTP Web server running on port {port}")
+    print("🚀 Starting Telegram Bot...")
+    
+    await bot.start(bot_token=BOT_TOKEN)
+    await bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    print("🚀 جاري تشغيل البوت...")
-    bot.start(bot_token=BOT_TOKEN)
-    bot.run_until_disconnected()
-
+    asyncio.run(main())
