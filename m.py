@@ -12,7 +12,7 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import (
     MessageNotModifiedError, UserAlreadyParticipantError,
-    PhoneNumberInvalidError, PhoneCodeInvalidError, SessionPasswordNeededError
+    PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError
 )
 
 from pytgcalls import PyTgCalls
@@ -97,7 +97,9 @@ def get_audio_duration(file_path):
     try:
         if file_path.endswith('.wav'):
             with contextlib.closing(wave.open(file_path, 'r')) as f:
-                return f.getnframes() / float(f.getframerate())
+                frames = f.getnframes()
+                rate = f.getframerate()
+                return frames / float(rate)
     except Exception:
         pass
     return 3.0
@@ -172,7 +174,7 @@ async def init_assistant_session():
             if await assistant_client.is_user_authorized():
                 pytgcalls_client = PyTgCalls(assistant_client)
                 await pytgcalls_client.start()
-                print("✅ الحساب المساعد متصل بالكامل.")
+                print("✅ تم اتصال الحساب المساعد بنجاح!")
             else:
                 assistant_client = None
                 pytgcalls_client = None
@@ -322,6 +324,26 @@ async def main_handler(event):
                 except Exception as e:
                     return await msg.edit(f"❌ كلمة سر خاطئة: `{e}`")
 
+            elif action == "awaiting_voice_to_delete":
+                p_id = state.get("provider_id")
+                voices_db = db["providers"].get(p_id, {}).get("voices", {})
+                deleted = 0
+                for cat in ["numbers", "words", "random"]:
+                    if cat in voices_db:
+                        new_list = []
+                        for item in voices_db[cat]:
+                            if item.get("text", "").strip() == text:
+                                deleted += 1
+                                if os.path.exists(item.get("file", "")):
+                                    try: os.remove(item.get("file", ""))
+                                    except Exception: pass
+                            else:
+                                new_list.append(item)
+                        voices_db[cat] = new_list
+                save_data(db)
+                user_states.pop(user_id, None)
+                return await event.reply(f"✅ تم حذف {deleted} فويس.", buttons=provider_voices_keyboard(p_id))
+
             elif action == "awaiting_voice":
                 if event.voice or event.audio or event.document:
                     os.makedirs("voices", exist_ok=True)
@@ -338,7 +360,7 @@ async def main_handler(event):
                 db["providers"][p_id]["voices"][v_type].append({"file": path, "text": text})
                 save_data(db)
                 user_states.pop(user_id, None)
-                return await event.reply(f"✅ تم حفظ الصوتية: `{text}`", buttons=provider_voices_keyboard(p_id))
+                return await event.reply(f"✅ تم حفظ الصوتية ونصها: `{text}`", buttons=provider_voices_keyboard(p_id))
 
             elif action == "awaiting_provider_id":
                 user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
@@ -362,6 +384,12 @@ async def main_handler(event):
                 save_data(db)
                 user_states.pop(user_id, None)
                 return await event.reply("✅ تم التحديث.")
+
+            elif action == "awaiting_block_id":
+                try: db["blocked_users"].append(int(text)); save_data(db); await event.reply("🚫 تم الحظر.")
+                except ValueError: pass
+                user_states.pop(user_id, None)
+                return
 
     # 2. المجموعات
     else:
@@ -393,7 +421,6 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # معالجة القراءات والإجابات داخل الاتصال
         sess = active_sessions.get(chat_id)
         if sess:
             async with get_lock(chat_id):
@@ -496,6 +523,17 @@ async def callback_handler(event):
         elif data == "change_dev_user" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_dev_user"}
             await event.edit("👤 أرسل اليوزر الجديد:")
+        elif data == "block_user" and user_id in db.get("developers", []):
+            user_states[user_id] = {"action": "awaiting_block_id"}
+            await event.edit("🚫 أرسل ID المراد حظره:")
+        elif data == "toggle_free_mode" and user_id in db.get("developers", []):
+            db["free_mode"] = not db.get("free_mode", True)
+            save_data(db)
+            await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
+        elif data == "take_backup" and user_id in db.get("developers", []):
+            save_data(db)
+            if os.path.exists(DATA_FILE):
+                await bot.send_file(user_id, DATA_FILE, caption="📦 النسخة الاحتياطية.")
         elif data == "provider_settings" and user_id in db.get("developers", []):
             await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
         elif data == "add_provider" and user_id in db.get("developers", []):
@@ -510,6 +548,10 @@ async def callback_handler(event):
                 del db["providers"][p_id]
                 save_data(db)
             await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
+        elif data.startswith("delete_voice_") and user_id in db.get("developers", []):
+            p_id = data.split("_")[2]
+            user_states[user_id] = {"action": "awaiting_voice_to_delete", "provider_id": p_id}
+            await event.edit("🗑️ أرسل نص الفويس المراد حذفه:")
         elif data.startswith("upload_voice_") and user_id in db.get("developers", []):
             parts = data.split("_")
             user_states[user_id] = {"action": "awaiting_voice", "provider_id": parts[2], "voice_type": parts[3]}
@@ -526,7 +568,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ نقطة الانطلاق ] ====================
+# ==================== [ نقطة الانطلاق السريعة ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Active")
@@ -542,7 +584,7 @@ async def main():
 
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 البوت شغال وجاهز لاستقبال الرسائل!")
+    print("🚀 البوت يعمل بكسر الأقفال ومستعد فوراً.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
