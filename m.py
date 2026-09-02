@@ -71,6 +71,7 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 chat_locks = {}
+processed_messages = set()  # مانع التكرار الجذري للرسائل المعالجة
 
 def get_lock(chat_id):
     if chat_id not in chat_locks:
@@ -104,18 +105,14 @@ def get_audio_duration(file_path):
         pass
     return 3.0
 
-# ==================== [ النسخ الاحتياطي التلقائي كلياً (12 ساعة) ] ====================
-
 async def auto_backup_loop():
     while True:
-        await asyncio.sleep(12 * 3600)  # كل 12 ساعة
+        await asyncio.sleep(12 * 3600)
         try:
             save_data(db)
-            print("💾 تم إجراء النسخ الاحتياطي التلقائي وقواعد البيانات مطبقة بنجاح.")
+            print("💾 تم إجراء النسخ الاحتياطي التلقائي بنجاح.")
         except Exception as e:
-            print(f"❌ خطأ في النسخ الاحتياطي التلقائي: {e}")
-
-# ==================== [ القوائم ولوحات التحكم ] ====================
+            print(f"❌ خطأ في النسخ الاحتياطي: {e}")
 
 async def main_keyboard(user_id):
     me = await bot.get_me()
@@ -143,7 +140,7 @@ def remove_dev_keyboard():
     buttons = []
     devs = db.get("developers", [])
     for dev_id in devs:
-        if dev_id != ADMIN_ID:  # عدم السماح بحذف المطور الأساسي صاحب البوت
+        if dev_id != ADMIN_ID:
             buttons.append([Button.inline(f"❌ حذف: {dev_id}", data=f"delete_dev_{dev_id}")])
     buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
     return buttons
@@ -271,6 +268,14 @@ async def play_current_voice(chat_id):
 async def private_handler(event):
     if event.out:
         return
+
+    # منع التكرار بالمعرف الفريد للرسالة
+    msg_unique_id = (event.chat_id, event.id)
+    if msg_unique_id in processed_messages:
+        return
+    processed_messages.add(msg_unique_id)
+    if len(processed_messages) > 1000:
+        processed_messages.pop()
 
     text = event.raw_text.strip() if event.raw_text else ""
     user_id = event.sender_id
@@ -419,12 +424,20 @@ async def private_handler(event):
             user_states.pop(user_id, None)
             return
 
-# ==================== [ معالجة المجموعات بدون تكرار ] ====================
+# ==================== [ معالجة المجموعات مع مانع تكرار ذكي ] ====================
 
 @bot.on(events.NewMessage)
 async def group_handler(event):
     if event.is_private or event.out:
         return
+
+    # منع التكرار الجذري (اذا تمت معالجة نفس ID الرسالة يتم تجاهلها فوراً)
+    msg_unique_id = (event.chat_id, event.id)
+    if msg_unique_id in processed_messages:
+        return
+    processed_messages.add(msg_unique_id)
+    if len(processed_messages) > 1000:
+        processed_messages.pop()
 
     chat_id = event.chat_id
     text = event.raw_text.strip() if event.raw_text else ""
@@ -638,10 +651,9 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
     
-    # تشغيل مهمة النسخ الاحتياطي التلقائي في الخلفية كل 12 ساعة
     asyncio.create_task(auto_backup_loop())
 
-    print("🚀 تم التحديث وإضافة ميزة حذف المطور والنسخ الاحتياطي التلقائي بنجاح.")
+    print("🚀 تم تفعيل مانع التكرار الجذري وتشغيل البوت بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
