@@ -72,6 +72,9 @@ login_clients = {}
 active_sessions = {}
 chat_locks = {}
 
+# سجل مخصص لمنع تكرار معالجة الرسائل
+processed_messages = set()
+
 def get_lock(chat_id):
     if chat_id not in chat_locks:
         chat_locks[chat_id] = asyncio.Lock()
@@ -248,6 +251,16 @@ async def play_current_voice(chat_id):
 async def main_handler(event):
     if event.out or event.is_channel:
         return
+
+    # منع التكرار: إذا كانت الرسالة معالجة سابقاً، يتم كسرها فوراً
+    msg_key = (event.chat_id, event.id)
+    if msg_key in processed_messages:
+        return
+    processed_messages.add(msg_key)
+
+    # تنظيف السجل لمنع تضخم الذاكرة
+    if len(processed_messages) > 2000:
+        processed_messages.clear()
 
     chat_id = event.chat_id
     text = event.raw_text.strip() if event.raw_text else ""
@@ -568,7 +581,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ نقطة الانطلاق السريعة ] ====================
+# ==================== [ نقطة الانطلاق ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Active")
@@ -584,7 +597,7 @@ async def main():
 
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 البوت يعمل بكسر الأقفال ومستعد فوراً.")
+    print("🚀 البوت شغال ويرد مرة واحدة فقط!")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
