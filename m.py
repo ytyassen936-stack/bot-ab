@@ -8,7 +8,10 @@ from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.functions.messages import ExportChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
-from telethon.errors import MessageNotModifiedError, UserAlreadyParticipantError, ChatAdminRequiredError
+from telethon.errors import (
+    MessageNotModifiedError, UserAlreadyParticipantError, ChatAdminRequiredError,
+    PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError
+)
 
 # ==================== [ استدعاء PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
@@ -68,7 +71,6 @@ user_states = {}
 login_sessions = {}
 active_sessions = {}
 
-# أقفال الشاتات لمنع التكرار نهائياً
 chat_locks = {}
 processed_msg_ids = set()
 
@@ -242,7 +244,6 @@ async def unified_message_handler(event):
     chat_id = event.chat_id
     msg_key = (chat_id, event.id)
 
-    # حظر الرسالة المكررة فوراً
     if msg_key in processed_msg_ids:
         return
     processed_msg_ids.add(msg_key)
@@ -250,7 +251,6 @@ async def unified_message_handler(event):
     if len(processed_msg_ids) > 3000:
         processed_msg_ids.clear()
 
-    # قفل الشات بالكامل لمنع تزامن المعالجات
     async with get_chat_lock(chat_id):
         text = event.raw_text.strip() if event.raw_text else ""
         user_id = event.sender_id
@@ -268,31 +268,35 @@ async def unified_message_handler(event):
                 state = user_states[user_id]
                 action = state.get("action")
 
-                # إصلاح خطوة طلب الكود والدخول
+                # إصلاح معالجة تسجيل الرقم وإرسال الكود
                 if action == "awaiting_phone_number":
                     phone = text.replace(" ", "").strip()
                     try:
-                        client = TelegramClient(StringSession(), API_ID, API_HASH)
-                        await client.connect()
-                        sent_code = await client.send_code_request(phone)
+                        temp_client = TelegramClient(StringSession(), API_ID, API_HASH)
+                        await temp_client.connect()
+                        
+                        sent_code = await temp_client.send_code_request(phone)
                         
                         login_sessions[user_id] = {
-                            "client": client, 
-                            "phone": phone, 
+                            "client": temp_client,
+                            "phone": phone,
                             "phone_code_hash": sent_code.phone_code_hash
                         }
                         user_states[user_id] = {"action": "awaiting_phone_code"}
-                        return await event.reply("📲 **تم إرسال كود التحقق بنجاح!**\n\nأرسل الكود الآن في المحادثة:")
+                        return await event.reply("📲 **تم إرسال كود التحقق بنجاح!**\n\nيرجى كتابة الكود وإرساله في المحادثة:")
+                    except PhoneNumberInvalidError:
+                        user_states.pop(user_id, None)
+                        return await event.reply("❌ رقم الهاتف غير صحيح! تأكد من كتابة رمز الدولة (مثال: +9647700000000).")
                     except Exception as e:
                         user_states.pop(user_id, None)
-                        return await event.reply(f"❌ خطأ أثناء إرسال الكود: `{e}`")
+                        return await event.reply(f"❌ تعذر إرسال الكود: `{e}`")
 
                 elif action == "awaiting_phone_code":
                     sess_data = login_sessions.get(user_id)
                     if not sess_data:
                         user_states.pop(user_id, None)
-                        return await event.reply("❌ انتهت المهلة، يرجى طلب الكود من جديد.")
-                    
+                        return await event.reply("❌ انتهت الجلسة، اضغط على زر تسجيل الدخول مجدداً.")
+
                     client = sess_data["client"]
                     clean_code = re.sub(r'\D', '', text)
                     try:
@@ -300,14 +304,46 @@ async def unified_message_handler(event):
                         session_str = client.session.save()
                         db["assistant_session"] = session_str
                         save_data(db)
-                        
+
                         login_sessions.pop(user_id, None)
                         user_states.pop(user_id, None)
-                        
+
                         await init_assistant_session()
-                        return await event.reply("✅ **تم ربط الحساب المساعد بنجاح وحفظ الجلسة دائماً!**")
+                        return await event.reply("✅ **تم تسجيل الدخول وربط الحساب المساعد بنجاح!**")
+                    except PhoneCodeInvalidError:
+                        return await event.reply("❌ الكود الذي أدخلته غير صحيح! أعد إرسال الكود الصحيح:")
+                    except PhoneCodeExpiredError:
+                        user_states.pop(user_id, None)
+                        login_sessions.pop(user_id, None)
+                        return await event.reply("❌ انتهت صلاحية الكود. يرجى البدء من جديد.")
+                    except SessionPasswordNeededError:
+                        user_states[user_id] = {"action": "awaiting_2fa_password"}
+                        return await event.reply("🔐 **الحساب محمي بالتحقق بخطوتين (2FA)**.\n\nيرجى إرسال كلمة السر الخاصة بالحساب:")
                     except Exception as e:
-                        return await event.reply(f"❌ فشل رمز التحقق: `{e}`\nحاول إرسال الكود الصحيح مجدداً:")
+                        user_states.pop(user_id, None)
+                        login_sessions.pop(user_id, None)
+                        return await event.reply(f"❌ فشل تسجيل الدخول: `{e}`")
+
+                elif action == "awaiting_2fa_password":
+                    sess_data = login_sessions.get(user_id)
+                    if not sess_data:
+                        user_states.pop(user_id, None)
+                        return await event.reply("❌ انتهت الجلسة، حاول مجدداً.")
+                    
+                    client = sess_data["client"]
+                    try:
+                        await client.sign_in(password=text)
+                        session_str = client.session.save()
+                        db["assistant_session"] = session_str
+                        save_data(db)
+
+                        login_sessions.pop(user_id, None)
+                        user_states.pop(user_id, None)
+
+                        await init_assistant_session()
+                        return await event.reply("✅ **تم فك كلمة السر وربط الحساب المساعد بنجاح!**")
+                    except Exception as e:
+                        return await event.reply(f"❌ كلمة السر غير صحيحة: `{e}`\nأعد إرسال كلمة السر الصحيحة:")
 
                 elif action == "awaiting_voice_to_delete":
                     p_id = state.get("provider_id")
