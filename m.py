@@ -11,7 +11,7 @@ from telethon.tl.functions.messages import ExportChatInviteRequest, ImportChatIn
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import (
-    MessageNotModifiedError, UserAlreadyParticipantError, ChatAdminRequiredError,
+    MessageNotModifiedError, UserAlreadyParticipantError,
     PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError
 )
 
@@ -70,8 +70,6 @@ db = load_data()
 user_states = {}
 login_clients = {}
 active_sessions = {}
-
-# قفل خاص بكل مجموعة لمنع التكرار النهائياً
 chat_locks = {}
 
 def get_chat_lock(chat_id):
@@ -273,14 +271,17 @@ async def main_handler(event):
             state = user_states[user_id]
             action = state.get("action")
 
+            # حل جذر لإرسال الكود بدون مشاكل
             if action == "awaiting_phone_number":
                 phone = text.replace(" ", "").replace("-", "").strip()
+                msg = await event.reply("🔄 جاري إرسال الكود للرقم...")
                 try:
+                    # إنشاء جلسة جديدة تماماً متصلة مباشرة
                     client = TelegramClient(StringSession(), API_ID, API_HASH)
                     await client.connect()
                     
-                    # طلب إرسال الكود للرقم
-                    sent_code = await client.send_code_request(phone)
+                    # إرسال طلب الكود بشكل صريح
+                    sent_code = await client.send_code_request(phone, force_sms=False)
                     
                     login_clients[user_id] = {
                         "client": client,
@@ -288,12 +289,12 @@ async def main_handler(event):
                         "phone_code_hash": sent_code.phone_code_hash
                     }
                     user_states[user_id] = {"action": "awaiting_phone_code"}
-                    return await event.reply("📲 **تم إرسال الكود في تطبيق تليجرام!**\n\nأدخل الكود هنا (مثال: `12345`):")
+                    return await msg.edit("📲 **تم إرسال الكود في تطبيق تليجرام!**\n\nأدخل الكود هنا (أضف مسافة بين الأرقام مثل `1 2 3 4 5` لتجنب كتم الحساب):")
                 except PhoneNumberInvalidError:
-                    return await event.reply("❌ الرقم غير صحيح! اكتبه بالصيغة الدولية مثل: `+9647700000000`")
+                    return await msg.edit("❌ الرقم غير صحيح! اكتبه بالصيغة الدولية مثل: `+9647700000000`")
                 except Exception as e:
                     user_states.pop(user_id, None)
-                    return await event.reply(f"❌ فشل إرسال الكود: `{e}`")
+                    return await msg.edit(f"❌ فشل طلب الكود: `{e}`\nتأكد من صحة الرقم أو حاول مجدداً بعد دقائق.")
 
             elif action == "awaiting_phone_code":
                 sess_data = login_clients.get(user_id)
@@ -303,6 +304,7 @@ async def main_handler(event):
 
                 client = sess_data["client"]
                 code = re.sub(r'\D', '', text)
+                msg = await event.reply("🔄 جاري التحقق من الكود...")
                 try:
                     await client.sign_in(phone=sess_data["phone"], code=code, phone_code_hash=sess_data["phone_code_hash"])
                     session_str = client.session.save()
@@ -313,16 +315,16 @@ async def main_handler(event):
                     user_states.pop(user_id, None)
 
                     await init_assistant_session()
-                    return await event.reply("✅ **تم تسجيل الدخول بنجاح وتفعيل الحساب المساعد!**")
+                    return await msg.edit("✅ **تم تسجيل الدخول بنجاح وتفعيل الحساب المساعد!**")
                 except PhoneCodeInvalidError:
-                    return await event.reply("❌ الكود خاطئ! تأكد منه وأعد إرساله:")
+                    return await msg.edit("❌ الكود خاطئ! أعد إرساله بتركيز:")
                 except SessionPasswordNeededError:
                     user_states[user_id] = {"action": "awaiting_2fa"}
-                    return await event.reply("🔐 **الحساب يحتوي تحقق بخطوتين.** أرسل كلمة السر:")
+                    return await msg.edit("🔐 **الحساب يحتوي تحقق بخطوتين.** أرسل كلمة السر:")
                 except Exception as e:
                     user_states.pop(user_id, None)
                     login_clients.pop(user_id, None)
-                    return await event.reply(f"❌ خطأ: `{e}`")
+                    return await msg.edit(f"❌ خطأ: `{e}`")
 
             elif action == "awaiting_2fa":
                 sess_data = login_clients.get(user_id)
@@ -330,6 +332,7 @@ async def main_handler(event):
                     user_states.pop(user_id, None)
                     return await event.reply("❌ انتهت الجلسة.")
                 client = sess_data["client"]
+                msg = await event.reply("🔄 جاري التحقق من كلمة السر...")
                 try:
                     await client.sign_in(password=text)
                     session_str = client.session.save()
@@ -340,9 +343,9 @@ async def main_handler(event):
                     user_states.pop(user_id, None)
 
                     await init_assistant_session()
-                    return await event.reply("✅ **تمت المطابقة وتفعيل الحساب المساعد بنجاح!**")
+                    return await msg.edit("✅ **تمت المطابقة وتفعيل الحساب المساعد بنجاح!**")
                 except Exception as e:
-                    return await event.reply(f"❌ كلمة السر غير صحيحة: `{e}`")
+                    return await msg.edit(f"❌ كلمة السر غير صحيحة: `{e}`")
 
             elif action == "awaiting_voice_to_delete":
                 p_id = state.get("provider_id")
@@ -447,12 +450,14 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # التثبيت الكامل للحد من التكرار عبر Async Lock
+        # التثبيت الكامل للحد من التكرار عبر Lock + إغلاق حقيقي
         sess = active_sessions.get(chat_id)
         if sess:
             lock = get_chat_lock(chat_id)
+            if lock.locked():
+                return  # إذا كان القفل شغال بسبب رسالة متزامنة، تجاهل الرسالة الثانية فوراً
+
             async with lock:
-                # إعادة الجلب للتأكد من حالة الفهرس الحالية
                 queue, idx = sess["queue"], sess["index"]
                 if idx < len(queue):
                     target_text = queue[idx].get("text", "")
@@ -466,7 +471,7 @@ async def main_handler(event):
                         matched = True
 
                     if matched:
-                        # زيادة رقم الصوتية فوراً لمنع أي معالجة ثانية بنفس الوقت
+                        # زيادة رقم الصوتية فوراً
                         sess["index"] += 1
                         
                         if sess.get("timer_task"):
@@ -591,7 +596,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ تشغيل السيرفر ] ====================
+# ==================== [ تشغيل السيرفر وتفادي الحظر ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Alive")
@@ -607,7 +612,20 @@ async def main():
     await site.start()
     
     print(f"🌐 Web Server Port: {port}")
-    await bot.start(bot_token=BOT_TOKEN)
+    
+    # تفادي الـ FloodWait والتوقف الكلي
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            break
+        except Exception as e:
+            if "FloodWaitError" in str(type(e)) or hasattr(e, 'seconds'):
+                wait_time = getattr(e, 'seconds', 60)
+                print(f"⚠️ حظر مؤقت من تلغرام! جاري الانتظار {wait_time} ثانية...")
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
+
     await init_assistant_session()
     await bot.run_until_disconnected()
 
