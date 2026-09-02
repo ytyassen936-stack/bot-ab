@@ -2,6 +2,8 @@ import os
 import json
 import re
 import asyncio
+import wave
+import contextlib
 from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
@@ -71,8 +73,9 @@ user_states = {}
 login_sessions = {}
 active_sessions = {}
 
-chat_locks = {}
+# نظام منع التكرار وإدارة الأقفال
 processed_msg_ids = set()
+chat_locks = {}
 
 def get_chat_lock(chat_id):
     if chat_id not in chat_locks:
@@ -94,6 +97,18 @@ def extract_numbers(text):
 def get_dev_link():
     dev_user = db.get("dev_username", DEV_USERNAME).replace("@", "")
     return f"https://t.me/{dev_user}"
+
+def get_audio_duration(file_path):
+    """حساب طول الملف الصوتي بالثواني"""
+    try:
+        if file_path.endswith('.wav'):
+            with contextlib.closing(wave.open(file_path, 'r')) as f:
+                frames = f.getnframes()
+                rate = f.getframerate()
+                return frames / float(rate)
+    except Exception:
+        pass
+    return 3.0
 
 async def main_keyboard(user_id):
     me = await bot.get_me()
@@ -189,8 +204,9 @@ async def stop_and_leave_call(chat_id):
             pass
         active_sessions.pop(chat_id, None)
 
-async def auto_skip_timer(chat_id, expected_idx):
-    await asyncio.sleep(7)
+async def auto_skip_timer(chat_id, expected_idx, wait_time):
+    """ينتظر انتهاء مدة الصوت + 4 ثوانٍ، وإذا محد جاوب يسوي تسكيب"""
+    await asyncio.sleep(wait_time)
     sess = active_sessions.get(chat_id)
     if not sess:
         return
@@ -199,7 +215,7 @@ async def auto_skip_timer(chat_id, expected_idx):
             queue = sess["queue"]
             if expected_idx < len(queue):
                 target_text = queue[expected_idx].get("text", "")
-                await bot.send_message(chat_id, f"⚠️ **تم تسكيب الصوتية:** `{target_text}` (محد جاوب)")
+                await bot.send_message(chat_id, f"⚠️ **تسكيب تلقائي:** محد تجاوب (`{target_text}`)")
                 sess["index"] += 1
                 await play_current_voice(chat_id)
 
@@ -216,7 +232,7 @@ async def play_current_voice(chat_id):
     queue = sess["queue"]
 
     if idx >= len(queue):
-        await bot.send_message(chat_id, f"✅ **تم انتهاء كافة صوتيات الفئة ({sess['category_name']}) للمقدم ({sess['provider_name']})**")
+        await bot.send_message(chat_id, f"✅ **تم الانتهاء من كافة صوتيات الفئة ({sess['category_name']}) للمقدم ({sess['provider_name']})**")
         await stop_and_leave_call(chat_id)
         return
 
@@ -232,7 +248,10 @@ async def play_current_voice(chat_id):
     except Exception as e:
         print(f"Play Stream Error: {e}")
 
-    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
+    # مدة الصوتية + 4 ثوانٍ مهلة انتظار
+    duration = get_audio_duration(file_path)
+    total_wait = duration + 4.0
+    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
 
 # ==================== [ معالج الرسائل الموحد المانع للتكرار ] ====================
 
@@ -258,7 +277,7 @@ async def unified_message_handler(event):
         if event.is_private:
             if text.startswith("/start"):
                 if user_id in db["blocked_users"]:
-                    return await event.reply("❌ أنت محظور من استخدام هذا البوت.")
+                    return await event.reply("❌ أنت محظور من استخدام البوت.")
                 user_states.pop(user_id, None)
                 sender = await event.get_sender()
                 name = sender.first_name if sender else "المستخدم"
@@ -268,13 +287,12 @@ async def unified_message_handler(event):
                 state = user_states[user_id]
                 action = state.get("action")
 
-                # إصلاح معالجة تسجيل الرقم وإرسال الكود
+                # حل مشكلة تسجيل الدخول بطلب الكود والحفاظ على الاتصال
                 if action == "awaiting_phone_number":
                     phone = text.replace(" ", "").strip()
                     try:
                         temp_client = TelegramClient(StringSession(), API_ID, API_HASH)
                         await temp_client.connect()
-                        
                         sent_code = await temp_client.send_code_request(phone)
                         
                         login_sessions[user_id] = {
@@ -283,19 +301,19 @@ async def unified_message_handler(event):
                             "phone_code_hash": sent_code.phone_code_hash
                         }
                         user_states[user_id] = {"action": "awaiting_phone_code"}
-                        return await event.reply("📲 **تم إرسال كود التحقق بنجاح!**\n\nيرجى كتابة الكود وإرساله في المحادثة:")
+                        return await event.reply("📲 **وصلك الكود!** أرسله هنا الآن:")
                     except PhoneNumberInvalidError:
                         user_states.pop(user_id, None)
-                        return await event.reply("❌ رقم الهاتف غير صحيح! تأكد من كتابة رمز الدولة (مثال: +9647700000000).")
+                        return await event.reply("❌ الرقم غير صحيح! اكتبه مع مفتاح الدولة (مثال: +9647700000000).")
                     except Exception as e:
                         user_states.pop(user_id, None)
-                        return await event.reply(f"❌ تعذر إرسال الكود: `{e}`")
+                        return await event.reply(f"❌ خطأ بالطلب: `{e}`")
 
                 elif action == "awaiting_phone_code":
                     sess_data = login_sessions.get(user_id)
                     if not sess_data:
                         user_states.pop(user_id, None)
-                        return await event.reply("❌ انتهت الجلسة، اضغط على زر تسجيل الدخول مجدداً.")
+                        return await event.reply("❌ انتهت الجلسة. أعد الطلب.")
 
                     client = sess_data["client"]
                     clean_code = re.sub(r'\D', '', text)
@@ -309,26 +327,26 @@ async def unified_message_handler(event):
                         user_states.pop(user_id, None)
 
                         await init_assistant_session()
-                        return await event.reply("✅ **تم تسجيل الدخول وربط الحساب المساعد بنجاح!**")
+                        return await event.reply("✅ **تم دخول الحساب المساعد وحفظ الجلسة دائماً!**")
                     except PhoneCodeInvalidError:
-                        return await event.reply("❌ الكود الذي أدخلته غير صحيح! أعد إرسال الكود الصحيح:")
+                        return await event.reply("❌ الكود خطأ، أعد إرساله الصحيح:")
                     except PhoneCodeExpiredError:
                         user_states.pop(user_id, None)
                         login_sessions.pop(user_id, None)
-                        return await event.reply("❌ انتهت صلاحية الكود. يرجى البدء من جديد.")
+                        return await event.reply("❌ انتهت صلاحية الكود. أعد الطلب.")
                     except SessionPasswordNeededError:
                         user_states[user_id] = {"action": "awaiting_2fa_password"}
-                        return await event.reply("🔐 **الحساب محمي بالتحقق بخطوتين (2FA)**.\n\nيرجى إرسال كلمة السر الخاصة بالحساب:")
+                        return await event.reply("🔐 **الحساب محمي بالتحقق بخطوتين (2FA)**.\n\nأرسل كلمة السر:")
                     except Exception as e:
                         user_states.pop(user_id, None)
                         login_sessions.pop(user_id, None)
-                        return await event.reply(f"❌ فشل تسجيل الدخول: `{e}`")
+                        return await event.reply(f"❌ فشل الدخول: `{e}`")
 
                 elif action == "awaiting_2fa_password":
                     sess_data = login_sessions.get(user_id)
                     if not sess_data:
                         user_states.pop(user_id, None)
-                        return await event.reply("❌ انتهت الجلسة، حاول مجدداً.")
+                        return await event.reply("❌ انتهت الجلسة.")
                     
                     client = sess_data["client"]
                     try:
@@ -341,9 +359,9 @@ async def unified_message_handler(event):
                         user_states.pop(user_id, None)
 
                         await init_assistant_session()
-                        return await event.reply("✅ **تم فك كلمة السر وربط الحساب المساعد بنجاح!**")
+                        return await event.reply("✅ **تم فتح كلمة السر وتفعيل الحساب المساعد!**")
                     except Exception as e:
-                        return await event.reply(f"❌ كلمة السر غير صحيحة: `{e}`\nأعد إرسال كلمة السر الصحيحة:")
+                        return await event.reply(f"❌ كلمة السر خطأ: `{e}`\nأعد كتابتها:")
 
                 elif action == "awaiting_voice_to_delete":
                     p_id = state.get("provider_id")
@@ -372,7 +390,7 @@ async def unified_message_handler(event):
                         path = f"voices/{p_id}_{v_type}_{os.urandom(4).hex()}.ogg"
                         await event.download_media(file=path)
                         user_states[user_id] = {"action": "awaiting_voice_text", "provider_id": p_id, "voice_type": v_type, "file_path": path}
-                        return await event.reply("👍 أرسل النص المطابق:")
+                        return await event.reply("👍 أرسل النص المطابق للصوتية:")
 
                 elif action == "awaiting_voice_text":
                     p_id, v_type, path = state.get("provider_id"), state.get("voice_type"), state.get("file_path")
@@ -432,7 +450,7 @@ async def unified_message_handler(event):
                 if chat_id not in db["activated_groups"]:
                     db["activated_groups"].append(chat_id)
                     save_data(db)
-                return await event.reply("✅ تم تفعيل البوت! اكتب: `ابداء التدريب الصوتي`")
+                return await event.reply("✅ تم التفعيل! اكتب: `ابداء التدريب الصوتي`")
 
             elif text in ["ابداء التدريب الصوتي", "ابدأ التدريب الصوتي"]:
                 if chat_id not in db["activated_groups"]:
@@ -447,6 +465,7 @@ async def unified_message_handler(event):
                     return await event.reply("👋 تم النزول.")
                 return await event.reply("⚠️ البوت غير متصل.")
 
+            # معالجة إجابة المستخدم والانتقال الفوري دون انتظار المهلة
             sess = active_sessions.get(chat_id)
             if sess:
                 async with sess["lock"]:
@@ -463,19 +482,22 @@ async def unified_message_handler(event):
                             matched = True
 
                         if matched:
-                            sess["index"] += 1
+                            # إلغاء مؤقت التسكيب تلقائياً لأن الشخص جاوب صح
                             if sess.get("timer_task"):
                                 sess["timer_task"].cancel()
                                 sess["timer_task"] = None
+
+                            sess["index"] += 1
                             await event.reply("يمك نقطه")
+                            # تشغيل الصوتية التالية فوراً
                             await play_current_voice(chat_id)
 
-# ==================== [ معالجة البدء خلف الكواليس ] ====================
+# ==================== [ عملية البدء خلف الكواليس ] ====================
 
 async def process_start_play(event, p_id, category):
     chat_id = event.chat_id
     if not assistant_client or not pytgcalls_client:
-        return await event.respond("❌ الحساب المساعد غير متصل أو لم يتم ربطه بعد!")
+        return await event.respond("❌ الحساب المساعد غير متصل! ربطه من إعدادات المطور أولاً.")
 
     voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
     if not voices_list:
@@ -496,9 +518,9 @@ async def process_start_play(event, p_id, category):
                 hash_code = match.group(1)
                 await assistant_client(ImportChatInviteRequest(hash_code))
             else:
-                return await event.respond("❌ تعذر استخراج رابط الدعوة تلقائياً.")
+                return await event.respond("❌ تعذر استخراج رابط الدعوة.")
         except ChatAdminRequiredError:
-            return await event.respond("❌ يرجى رفع البوت مشرفاً وتحديد صلاحية إنشاء روابط الدعوة.")
+            return await event.respond("❌ ارفع البوت مشرفاً مع صلاحية الدعوة.")
         except UserAlreadyParticipantError:
             pass
         except Exception as e:
@@ -531,7 +553,7 @@ async def callback_handler(event):
         elif data == "main_menu":
             await event.edit("القائمة الرئيسية:", buttons=await main_keyboard(user_id))
         elif data == "user_guide":
-            await event.edit("📖 **دليل الاستخدام:**\n1. أضف البوت إلى مجموعتك.\n2. اكتب `تفعيل`.\n3. اكتب `ابداء التدريب الصوتي`.", buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
+            await event.edit("📖 **دليل الاستخدام:**\n1. أضف البوت للمجموعة.\n2. اكتب `تفعيل`.\n3. اكتب `ابداء التدريب الصوتي`.", buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
         elif data == "dev_settings" and user_id in db["developers"]:
             await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
         elif data == "assistant_menu" and user_id in db["developers"]:
@@ -619,3 +641,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
