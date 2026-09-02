@@ -4,8 +4,8 @@ import re
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.channels import GetParticipantRequest, ExportInviteRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.functions.messages import ExportChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import MessageNotModifiedError, UserAlreadyParticipantError, ChatAdminRequiredError
@@ -163,7 +163,7 @@ async def stop_and_leave_call(chat_id):
         active_sessions.pop(chat_id, None)
 
 async def auto_skip_timer(chat_id, expected_idx):
-    # إعطاء مهلة كافية لسماع الفويس بالكامل (7 ثوانٍ)
+    # إعطاء مهلة 7 ثوانٍ لسماع الفويس بالكامل
     await asyncio.sleep(7)
     sess = active_sessions.get(chat_id)
     if not sess:
@@ -175,7 +175,6 @@ async def auto_skip_timer(chat_id, expected_idx):
                 target_text = queue[expected_idx].get("text", "")
                 await bot.send_message(chat_id, f"⚠️ **تم تسكيب الصوتية:** `{target_text}` (محد جاوب)")
                 sess["index"] += 1
-                # الانتقال والتكمال التلقائي للفويز التالي دون توقف
                 await play_current_voice(chat_id)
 
 async def play_current_voice(chat_id):
@@ -190,7 +189,6 @@ async def play_current_voice(chat_id):
     idx = sess["index"]
     queue = sess["queue"]
 
-    # عند الانتهاء من جميع الفويسات في القسم
     if idx >= len(queue):
         await bot.send_message(chat_id, f"✅ **تم انتهاء كافة صوتيات الفئة ({sess['category_name']}) للمقدم ({sess['provider_name']})**")
         await stop_and_leave_call(chat_id)
@@ -209,7 +207,6 @@ async def play_current_voice(chat_id):
     except Exception as e:
         print(f"Play Stream Error: {e}")
 
-    # إطلاق مؤقت التسكيب للفويز الحالي
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx))
 
 # ==================== [ معالج الرسائل الموحد المانع للتكرار ] ====================
@@ -382,7 +379,6 @@ async def unified_message_handler(event):
                     return await event.reply("👋 تم النزول.")
                 return await event.reply("⚠️ البوت غير متصل.")
 
-            # معالجة إجابات الأعضاء داخل المجموعة
             sess = active_sessions.get(chat_id)
             if sess:
                 queue, idx = sess["queue"], sess["index"]
@@ -487,12 +483,9 @@ async def callback_handler(event):
 
             await event.edit("🎙️ جاري التجهيز وفحص الحساب المساعد...")
 
-            # 1. إنشاء العميل الخاص بالحساب المساعد
             assistant = TelegramClient(StringSession(saved_session), API_ID, API_HASH)
             await assistant.connect()
-            asst_me = await assistant.get_me()
 
-            # 2. التحقق من وجود الحساب المساعد في المجموعة
             is_in_chat = False
             try:
                 await assistant.get_entity(chat_id)
@@ -500,12 +493,10 @@ async def callback_handler(event):
             except Exception:
                 is_in_chat = False
 
-            # 3. إذا لم يكن الحساب موجوداً، يستخرج البوت الرابط ويدخله تلقائياً
             if not is_in_chat:
                 try:
-                    invite = await bot(ExportInviteRequest(chat_id))
+                    invite = await bot(ExportChatInviteRequest(chat_id))
                     invite_link = invite.link
-                    # انضمام الحساب المساعد عبر الرابط
                     hash_code = invite_link.split("/")[-1].replace("+", "")
                     await assistant(ImportChatInviteRequest(hash_code))
                 except ChatAdminRequiredError:
@@ -517,7 +508,6 @@ async def callback_handler(event):
                     await assistant.disconnect()
                     return await event.respond(f"❌ تعذر انضمام الحساب المساعد تلقائياً: `{e}`")
 
-            # 4. البدء بالاتصال الصوتي
             try:
                 if chat_id in active_sessions:
                     await stop_and_leave_call(chat_id)
@@ -540,7 +530,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ خادم الويب المباشر المدمج مع Event Loop ] ====================
+# ==================== [ خادم الويب المباشر المدمج ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Alive")
@@ -563,3 +553,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
