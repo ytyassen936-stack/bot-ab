@@ -2,7 +2,6 @@ import os
 import json
 import re
 import asyncio
-import time
 from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
@@ -35,6 +34,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
 bot = TelegramClient("voice_bot_session", API_ID, API_HASH)
+assistant_client = None
+pytgcalls_client = None
 
 DATA_FILE = "bot_database.json"
 
@@ -67,8 +68,9 @@ user_states = {}
 login_sessions = {}
 active_sessions = {}
 
-# نظام منع التكرار الحتمي والقاطع
+# أقفال الحماية لمنع التكرار مطلقاً
 processed_msg_ids = set()
+active_button_clicks = set()
 processing_lock = asyncio.Lock()
 
 def normalize_text(text):
@@ -147,18 +149,36 @@ def group_types_keyboard(p_id):
         [Button.inline("🔙 إلغاء", data="close_menu")]
     ]
 
+async def init_assistant_session():
+    global assistant_client, pytgcalls_client
+    session_str = db.get("assistant_session")
+    if session_str:
+        try:
+            assistant_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+            await assistant_client.connect()
+            if await assistant_client.is_user_authorized():
+                pytgcalls_client = PyTgCalls(assistant_client)
+                await pytgcalls_client.start()
+                print("✅ تم تشغيل وربط الحساب المساعد بنجاح.")
+            else:
+                assistant_client = None
+                pytgcalls_client = None
+        except Exception as e:
+            print(f"❌ خطأ أثناء تشغيل الحساب المساعد: {e}")
+            assistant_client = None
+            pytgcalls_client = None
+
 async def stop_and_leave_call(chat_id):
     sess = active_sessions.get(chat_id)
     if sess:
         if sess.get("timer_task"):
             sess["timer_task"].cancel()
         try:
-            call_py = sess.get("pytgcalls")
-            if hasattr(call_py, 'leave_group_call'):
-                await call_py.leave_group_call(chat_id)
-            elif hasattr(call_py, 'leave_call'):
-                await call_py.leave_call(chat_id)
-            await sess["assistant"].disconnect()
+            if pytgcalls_client:
+                if hasattr(pytgcalls_client, 'leave_group_call'):
+                    await pytgcalls_client.leave_group_call(chat_id)
+                elif hasattr(pytgcalls_client, 'leave_call'):
+                    await pytgcalls_client.leave_call(chat_id)
         except Exception:
             pass
         active_sessions.pop(chat_id, None)
@@ -179,7 +199,7 @@ async def auto_skip_timer(chat_id, expected_idx):
 
 async def play_current_voice(chat_id):
     sess = active_sessions.get(chat_id)
-    if not sess:
+    if not sess or not pytgcalls_client:
         return
 
     if sess.get("timer_task"):
@@ -196,14 +216,13 @@ async def play_current_voice(chat_id):
 
     file_path = queue[idx].get("file")
     try:
-        call_py = sess["pytgcalls"]
         stream = AudioStreamClass(file_path)
-        if hasattr(call_py, 'change_stream'):
-            await call_py.change_stream(chat_id, stream)
-        elif hasattr(call_py, 'join_group_call'):
-            await call_py.join_group_call(chat_id, stream)
-        elif hasattr(call_py, 'play'):
-            await call_py.play(chat_id, stream)
+        if hasattr(pytgcalls_client, 'change_stream'):
+            await pytgcalls_client.change_stream(chat_id, stream)
+        elif hasattr(pytgcalls_client, 'join_group_call'):
+            await pytgcalls_client.join_group_call(chat_id, stream)
+        elif hasattr(pytgcalls_client, 'play'):
+            await pytgcalls_client.play(chat_id, stream)
     except Exception as e:
         print(f"Play Stream Error: {e}")
 
@@ -213,19 +232,15 @@ async def play_current_voice(chat_id):
 
 @bot.on(events.NewMessage)
 async def unified_message_handler(event):
-    # حظر الرسايل الصادرة من البوت نفسه فوراً
     if event.out or event.is_channel:
         return
 
     msg_key = (event.chat_id, event.id)
-
-    # التحقق المباشر من المزامنة
     async with processing_lock:
         if msg_key in processed_msg_ids:
             return
         processed_msg_ids.add(msg_key)
 
-        # تنظيف الذاكرة
         if len(processed_msg_ids) > 2000:
             processed_msg_ids.clear()
 
@@ -271,13 +286,16 @@ async def unified_message_handler(event):
                 clean_code = re.sub(r'\D', '', text)
                 try:
                     await client.sign_in(phone=sess_data["phone"], code=clean_code, phone_code_hash=sess_data["phone_code_hash"])
-                    db["assistant_session"] = client.session.save()
+                    session_str = client.session.save()
+                    db["assistant_session"] = session_str
                     save_data(db)
-                    me_asst = await client.get_me()
+                    
                     await client.disconnect()
                     login_sessions.pop(user_id, None)
                     user_states.pop(user_id, None)
-                    return await event.reply(f"✅ تم ربط الحساب: **{me_asst.first_name}**")
+                    
+                    await init_assistant_session()
+                    return await event.reply("✅ **تم حفظ الحساب المساعد وتفعيله دائماً!**")
                 except Exception as e:
                     await client.disconnect()
                     login_sessions.pop(user_id, None)
@@ -409,13 +427,66 @@ async def unified_message_handler(event):
                         await event.reply("يمك نقطه")
                         await play_current_voice(chat_id)
 
+# ==================== [ عملية البدء التلقائي للخادم خلف الكواليس ] ====================
+
+async def process_start_play(event, p_id, category):
+    chat_id = event.chat_id
+    if not assistant_client or not pytgcalls_client:
+        return await event.respond("❌ الحساب المساعد غير متصل أو لم يتم ربطه بعد!")
+
+    voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
+    if not voices_list:
+        return await event.respond("⚠️ لا توجد فويسات لهذا القسم!")
+
+    is_in_chat = False
+    try:
+        await assistant_client.get_entity(chat_id)
+        is_in_chat = True
+    except Exception:
+        is_in_chat = False
+
+    if not is_in_chat:
+        try:
+            invite = await bot(ExportChatInviteRequest(chat_id))
+            match = re.search(r'(?:joinchat/|\+)([\w-]+)', invite.link)
+            if match:
+                hash_code = match.group(1)
+                await assistant_client(ImportChatInviteRequest(hash_code))
+            else:
+                return await event.respond("❌ تعذر استخراج رابط الدعوة تلقائياً.")
+        except ChatAdminRequiredError:
+            return await event.respond("❌ يرجى رفع البوت مشرفاً وتحديد صلاحية إنشاء روابط الدعوة.")
+        except UserAlreadyParticipantError:
+            pass
+        except Exception as e:
+            return await event.respond(f"❌ فشل دخول الحساب المساعد: `{e}`")
+
+    try:
+        if chat_id in active_sessions:
+            await stop_and_leave_call(chat_id)
+
+        active_sessions[chat_id] = {
+            "queue": voices_list, "index": 0,
+            "provider_name": db.get("providers", {}).get(p_id, {}).get("name", p_id),
+            "category_name": category, "lock": asyncio.Lock(), "timer_task": None
+        }
+        await play_current_voice(chat_id)
+        await event.delete()
+    except Exception as e:
+        await event.respond(f"❌ خطأ التشغيل: `{e}`")
+
 # ==================== [ معالج الأزرار Inline ] ====================
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
     data = event.data.decode("utf-8")
     user_id = event.sender_id
-    chat_id = event.chat_id
+
+    # حظر الكليكات المكررة كلياً
+    click_key = (event.message_id, data)
+    if click_key in active_button_clicks:
+        return await event.answer()
+    active_button_clicks.add(click_key)
 
     try:
         if data == "close_menu":
@@ -481,66 +552,13 @@ async def callback_handler(event):
         elif data.startswith("start_play_"):
             parts = data.split("_")
             p_id, category = parts[2], parts[3]
-            saved_session = db.get("assistant_session")
-            if not saved_session:
-                return await event.answer("❌ لا يوجد حساب مساعد مربوط!", alert=True)
-
-            voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
-            if not voices_list:
-                return await event.answer("⚠️ لا توجد فويسات لهذا القسم!", alert=True)
-
-            await event.edit("🎙️ جاري التجهيز وفحص الحساب المساعد...")
-
-            assistant = TelegramClient(StringSession(saved_session), API_ID, API_HASH)
-            await assistant.connect()
-
-            is_in_chat = False
-            try:
-                await assistant.get_entity(chat_id)
-                is_in_chat = True
-            except Exception:
-                is_in_chat = False
-
-            if not is_in_chat:
-                try:
-                    invite = await bot(ExportChatInviteRequest(chat_id))
-                    match = re.search(r'(?:joinchat/|\+)([\w-]+)', invite.link)
-                    if match:
-                        hash_code = match.group(1)
-                        await assistant(ImportChatInviteRequest(hash_code))
-                    else:
-                        await assistant.disconnect()
-                        return await event.respond("❌ تعذر استخراج كود الدعوة بشكل صحيح.")
-                except ChatAdminRequiredError:
-                    await assistant.disconnect()
-                    return await event.respond("❌ البوت لا يمتلك صلاحية إنشاء رابط الدعوة لإدخال الحساب المساعد! يرجى رفع البوت مشرفاً بمنحه كافة الصلاحيات.")
-                except UserAlreadyParticipantError:
-                    pass
-                except Exception as e:
-                    await assistant.disconnect()
-                    return await event.respond(f"❌ تعذر انضمام الحساب المساعد تلقائياً: `{e}`")
-
-            try:
-                if chat_id in active_sessions:
-                    await stop_and_leave_call(chat_id)
-
-                call_py = PyTgCalls(assistant)
-                await call_py.start()
-
-                active_sessions[chat_id] = {
-                    "pytgcalls": call_py, "assistant": assistant,
-                    "queue": voices_list, "index": 0,
-                    "provider_name": db.get("providers", {}).get(p_id, {}).get("name", p_id),
-                    "category_name": category, "lock": asyncio.Lock(), "timer_task": None
-                }
-                await play_current_voice(chat_id)
-                await event.delete()
-            except Exception as e:
-                await assistant.disconnect()
-                await event.respond(f"❌ خطأ عند الاتصال بالمحادثة الصوتية: `{e}`")
+            await event.edit("🎙️ جاري دخول الحساب المساعد للاتصال...")
+            asyncio.create_task(process_start_play(event, p_id, category))
 
     except MessageNotModifiedError:
         pass
+    finally:
+        active_button_clicks.remove(click_key)
 
 # ==================== [ خادم الويب المباشر المدمج ] ====================
 
@@ -561,6 +579,7 @@ async def main():
     print("🚀 Starting Telegram Bot...")
     
     await bot.start(bot_token=BOT_TOKEN)
+    await init_assistant_session()
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
