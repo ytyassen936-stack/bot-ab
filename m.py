@@ -104,6 +104,19 @@ def get_audio_duration(file_path):
         pass
     return 3.0
 
+# ==================== [ النسخ الاحتياطي التلقائي كلياً (12 ساعة) ] ====================
+
+async def auto_backup_loop():
+    while True:
+        await asyncio.sleep(12 * 3600)  # كل 12 ساعة
+        try:
+            save_data(db)
+            print("💾 تم إجراء النسخ الاحتياطي التلقائي وقواعد البيانات مطبقة بنجاح.")
+        except Exception as e:
+            print(f"❌ خطأ في النسخ الاحتياطي التلقائي: {e}")
+
+# ==================== [ القوائم ولوحات التحكم ] ====================
+
 async def main_keyboard(user_id):
     me = await bot.get_me()
     buttons = [
@@ -118,12 +131,22 @@ def dev_keyboard():
     free_status = "مفعل 🟢" if db.get("free_mode", True) else "معطل 🔴"
     assistant_status = "مربوط ✅" if db.get("assistant_session") else "غير مربوط ❌"
     return [
-        [Button.inline("➕ إضافة مطور", data="add_dev_id"), Button.inline("👤 تغيير يوزر المطور", data="change_dev_user")],
-        [Button.inline(f"📱 ربط الحساب المساعد ({assistant_status})", data="assistant_menu"), Button.inline("🚫 حظر شخص", data="block_user")],
+        [Button.inline("➕ إضافة مطور", data="add_dev_id"), Button.inline("🗑️ حذف مطور", data="remove_dev_menu")],
+        [Button.inline("👤 تغيير يوزر المطور", data="change_dev_user"), Button.inline("🚫 حظر شخص", data="block_user")],
+        [Button.inline(f"📱 ربط الحساب المساعد ({assistant_status})", data="assistant_menu")],
         [Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
-        [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"), Button.inline("📦 نسخ احتياطي", data="take_backup")],
+        [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"), Button.inline("📦 تحميل النسخة الحالية", data="take_backup")],
         [Button.inline("🔙 رجوع", data="main_menu")]
     ]
+
+def remove_dev_keyboard():
+    buttons = []
+    devs = db.get("developers", [])
+    for dev_id in devs:
+        if dev_id != ADMIN_ID:  # عدم السماح بحذف المطور الأساسي صاحب البوت
+            buttons.append([Button.inline(f"❌ حذف: {dev_id}", data=f"delete_dev_{dev_id}")])
+    buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
+    return buttons
 
 def assistant_menu_keyboard():
     return [
@@ -244,7 +267,7 @@ async def play_current_voice(chat_id):
 
 # ==================== [ معالجة الخاص ] ====================
 
-@bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+@bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
     if event.out:
         return
@@ -371,8 +394,16 @@ async def private_handler(event):
             return await event.reply("✅ تم الحفظ.", buttons=provider_voices_keyboard(p_id))
 
         elif action == "awaiting_dev_id":
-            try: db["developers"].append(int(text)); save_data(db); await event.reply("✅ تم الإضافة.")
-            except ValueError: pass
+            try:
+                new_dev = int(text)
+                if new_dev not in db["developers"]:
+                    db["developers"].append(new_dev)
+                    save_data(db)
+                    await event.reply("✅ تم إضافته كمطور بنجاح.")
+                else:
+                    await event.reply("⚠️ المطور موجود بالفعل.")
+            except ValueError:
+                await event.reply("❌ يرجى إدخال ID صحيح (أرقام فقط).")
             user_states.pop(user_id, None)
             return
 
@@ -388,11 +419,10 @@ async def private_handler(event):
             user_states.pop(user_id, None)
             return
 
-# ==================== [ معالجة المجموعات المعدلة بشكل مضمون ] ====================
+# ==================== [ معالجة المجموعات بدون تكرار ] ====================
 
-@bot.on(events.NewMessage(incoming=True))
+@bot.on(events.NewMessage)
 async def group_handler(event):
-    # إهمال الرسائل الخاصة والرسائل الصادرة من البوت
     if event.is_private or event.out:
         return
 
@@ -407,8 +437,7 @@ async def group_handler(event):
                 part = await bot(GetParticipantRequest(chat_id, user_id))
                 if isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator)):
                     is_admin = True
-            except Exception as e:
-                # في حال حدوث أي خطأ أثنا الفحص، نعتبر العضو مشرفاً للسهولة وتفادي التجاهل
+            except Exception:
                 is_admin = True
 
         if not is_admin:
@@ -506,7 +535,7 @@ async def process_start_play(event, p_id, category):
     except Exception as e:
         await event.respond(f"❌ خطأ التشغيل: `{e}`")
 
-# ==================== [ أزرار القوائم ] ====================
+# ==================== [ أزرار القوائم والتحكم ] ====================
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -522,6 +551,15 @@ async def callback_handler(event):
             await event.edit("📖 **دليل الاستخدام:**\n1. أضف البوت للمجموعة.\n2. اكتب `تفعيل`.\n3. اكتب `ابداء التدريب الصوتي`.", buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
         elif data == "dev_settings" and user_id in db.get("developers", []):
             await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
+        elif data == "remove_dev_menu" and user_id in db.get("developers", []):
+            await event.edit("🗑️ اختر المطور المراد حذفه من القائمة:", buttons=remove_dev_keyboard())
+        elif data.startswith("delete_dev_") and user_id in db.get("developers", []):
+            target_dev = int(data.split("_")[2])
+            if target_dev in db["developers"]:
+                db["developers"].remove(target_dev)
+                save_data(db)
+                await event.answer("✅ تم حذف المطور بنجاح.", alert=True)
+            await event.edit("🗑️ اختر المطور المراد حذفه من القائمة:", buttons=remove_dev_keyboard())
         elif data == "assistant_menu" and user_id in db.get("developers", []):
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
         elif data == "login_by_phone" and user_id in db.get("developers", []):
@@ -534,7 +572,7 @@ async def callback_handler(event):
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
         elif data == "add_dev_id" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_dev_id"}
-            await event.edit("📥 أرسل ID المطور:")
+            await event.edit("📥 أرسل ID المطور الجديد:")
         elif data == "change_dev_user" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_dev_user"}
             await event.edit("👤 أرسل اليوزر الجديد:")
@@ -548,7 +586,7 @@ async def callback_handler(event):
         elif data == "take_backup" and user_id in db.get("developers", []):
             save_data(db)
             if os.path.exists(DATA_FILE):
-                await bot.send_file(user_id, DATA_FILE, caption="📦 النسخة الاحتياطية.")
+                await bot.send_file(user_id, DATA_FILE, caption="📦 النسخة الاحتياطية الحالية.")
         elif data == "provider_settings" and user_id in db.get("developers", []):
             await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
         elif data == "add_provider" and user_id in db.get("developers", []):
@@ -599,7 +637,11 @@ async def main():
 
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 تم تحديث معالج المجموعات بنجاح.")
+    
+    # تشغيل مهمة النسخ الاحتياطي التلقائي في الخلفية كل 12 ساعة
+    asyncio.create_task(auto_backup_loop())
+
+    print("🚀 تم التحديث وإضافة ميزة حذف المطور والنسخ الاحتياطي التلقائي بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
