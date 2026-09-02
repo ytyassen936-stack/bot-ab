@@ -31,7 +31,7 @@ except ImportError:
 
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8989979653:AAG15pSehmpYOcO6vQcFZCMtNMzgQ3co4HQ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -242,9 +242,9 @@ async def play_current_voice(chat_id):
     duration = get_audio_duration(file_path)
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 4.0))
 
-# ==================== [ معالجة الخاص منفصلة ] ====================
+# ==================== [ معالجة الخاص ] ====================
 
-@bot.on(events.NewMessage(incoming=True, private=True))
+@bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def private_handler(event):
     if event.out:
         return
@@ -388,11 +388,11 @@ async def private_handler(event):
             user_states.pop(user_id, None)
             return
 
-# ==================== [ معالجة المجموعات منفصلة ] ====================
+# ==================== [ معالجة المجموعات ] ====================
 
-@bot.on(events.NewMessage(incoming=True, chats=None))
+@bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
-    if event.is_private or event.out or event.is_channel:
+    if event.out:
         return
 
     chat_id = event.chat_id
@@ -590,7 +590,7 @@ async def main():
 
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 البوت شغال وفصل تام للأحداث لمنع التكرار.")
+    print("🚀 تم التعديل والرفع بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
