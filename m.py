@@ -66,7 +66,7 @@ user_states = {}
 login_sessions = {}
 active_sessions = {}
 
-# نظام منع التكرار الحازم
+# نظام منع التكرار القاطع
 processed_msg_ids = set()
 global_lock = asyncio.Lock()
 
@@ -163,7 +163,6 @@ async def stop_and_leave_call(chat_id):
         active_sessions.pop(chat_id, None)
 
 async def auto_skip_timer(chat_id, expected_idx):
-    # إعطاء مهلة 7 ثوانٍ لسماع الفويس بالكامل
     await asyncio.sleep(7)
     sess = active_sessions.get(chat_id)
     if not sess:
@@ -213,6 +212,11 @@ async def play_current_voice(chat_id):
 
 @bot.on(events.NewMessage)
 async def unified_message_handler(event):
+    # تجاهل رسائل البوت نفسه للحيلولة دون التكرار
+    me = await bot.get_me()
+    if event.sender_id == me.id:
+        return
+
     async with global_lock:
         msg_key = (event.chat_id, event.id)
         if msg_key in processed_msg_ids:
@@ -266,11 +270,11 @@ async def unified_message_handler(event):
                         await client.sign_in(phone=sess_data["phone"], code=clean_code, phone_code_hash=sess_data["phone_code_hash"])
                         db["assistant_session"] = client.session.save()
                         save_data(db)
-                        me = await client.get_me()
+                        me_asst = await client.get_me()
                         await client.disconnect()
                         login_sessions.pop(user_id, None)
                         user_states.pop(user_id, None)
-                        return await event.reply(f"✅ تم ربط الحساب: **{me.first_name}**")
+                        return await event.reply(f"✅ تم ربط الحساب: **{me_asst.first_name}**")
                     except Exception as e:
                         await client.disconnect()
                         login_sessions.pop(user_id, None)
@@ -496,9 +500,14 @@ async def callback_handler(event):
             if not is_in_chat:
                 try:
                     invite = await bot(ExportChatInviteRequest(chat_id))
-                    invite_link = invite.link
-                    hash_code = invite_link.split("/")[-1].replace("+", "")
-                    await assistant(ImportChatInviteRequest(hash_code))
+                    # استخراج الـ hash بدقة من رابط الدعوة
+                    match = re.search(r'(?:joinchat/|\+)([\w-]+)', invite.link)
+                    if match:
+                        hash_code = match.group(1)
+                        await assistant(ImportChatInviteRequest(hash_code))
+                    else:
+                        await assistant.disconnect()
+                        return await event.respond("❌ تعذر استخراج كود الدعوة بشكل صحيح.")
                 except ChatAdminRequiredError:
                     await assistant.disconnect()
                     return await event.respond("❌ البوت لا يمتلك صلاحية إنشاء رابط الدعوة لإدخال الحساب المساعد! يرجى رفع البوت مشرفاً بمنحه كافة الصلاحيات.")
@@ -553,4 +562,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
