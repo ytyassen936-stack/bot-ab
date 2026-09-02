@@ -19,8 +19,11 @@ from telethon.errors import (
 from pytgcalls import PyTgCalls
 
 AudioStreamClass = None
+AudioParametersClass = None
 try:
     from pytgcalls.types import AudioPiped as AudioStreamClass
+    from pytgcalls.types import AudioParameters
+    AudioParametersClass = AudioParameters
 except ImportError:
     try:
         from pytgcalls.types.input_stream import AudioPiped as AudioStreamClass
@@ -37,14 +40,12 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-# تفعيل sequential_updates لضمان معالجة الرسائل بالترتيب التام ومنع التوازي
 bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
 
 DATA_FILE = "bot_database.json"
 
-# ذاكرة لتخزين معرفات الأزرار والرسائل التي تم التعامل معها
 processed_updates = set()
 global_lock = asyncio.Lock()
 
@@ -245,20 +246,28 @@ async def play_current_voice(chat_id):
 
     file_path = queue[idx].get("file")
     try:
-        stream = AudioStreamClass(file_path)
+        # إنشاء الستريم مع ضبط الخصائص لتجنب السرعة والتأخير
+        if AudioParametersClass:
+            stream = AudioStreamClass(file_path, parameters=AudioParametersClass(bitrate=48000))
+        else:
+            stream = AudioStreamClass(file_path)
+
+        # تأخير مصغر 0.2 ثانية لتأكيد جاهزية ملف الصوت دون إحداث بطء
+        await asyncio.sleep(0.2)
+
         if hasattr(pytgcalls_client, 'change_stream'):
             await pytgcalls_client.change_stream(chat_id, stream)
-        elif hasattr(pytgcalls_client, 'join_group_call'):
-            await pytgcalls_client.join_group_call(chat_id, stream)
         elif hasattr(pytgcalls_client, 'play'):
             await pytgcalls_client.play(chat_id, stream)
+        elif hasattr(pytgcalls_client, 'join_group_call'):
+            await pytgcalls_client.join_group_call(chat_id, stream)
     except Exception as e:
         print(f"Error streaming audio: {e}")
 
     duration = get_audio_duration(file_path)
-    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 4.0))
+    # التسكيب أصبح بعد 5.0 ثوانٍ متصلة بعد نهاية الفويس
+    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 5.0))
 
-# دالة فلترة مانعة للتكرار التام
 def is_duplicate_event(event_id):
     if event_id in processed_updates:
         return True
@@ -636,7 +645,7 @@ async def main():
     await start_dummy_server()
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 تم التحديث وإصلاح جذر التكرار بنجاح.")
+    print("🚀 تم الحفظ والتعديل بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
