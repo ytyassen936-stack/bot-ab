@@ -15,7 +15,6 @@ from telethon.errors import (
     PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError
 )
 
-# ==================== [ استدعاء PyTgCalls ] ====================
 from pytgcalls import PyTgCalls
 
 AudioStreamClass = None
@@ -30,7 +29,6 @@ except ImportError:
         except ImportError:
             pass
 
-# ==================== [ إعدادات المتغيرات ] ====================
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758741369:AAFghyYnFHb2Sigqhr5hQDyYH5BF0zNNDVQ")
@@ -73,7 +71,13 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 
-processed_msgs = set()
+# قفل خاص بكل مجموعة لمنع التكرار النهائياً
+chat_locks = {}
+
+def get_chat_lock(chat_id):
+    if chat_id not in chat_locks:
+        chat_locks[chat_id] = asyncio.Lock()
+    return chat_locks[chat_id]
 
 def normalize_text(text):
     if not text:
@@ -201,15 +205,15 @@ async def auto_skip_timer(chat_id, expected_idx, wait_time):
     sess = active_sessions.get(chat_id)
     if not sess:
         return
-    if sess["index"] == expected_idx and not sess.get("is_processing"):
-        sess["is_processing"] = True
-        queue = sess["queue"]
-        if expected_idx < len(queue):
-            target_text = queue[expected_idx].get("text", "")
-            await bot.send_message(chat_id, f"⚠️ **تسكيب تلقائي:** محد تجاوب (`{target_text}`)")
-            sess["index"] += 1
-            sess["is_processing"] = False
-            await play_current_voice(chat_id)
+    lock = get_chat_lock(chat_id)
+    async with lock:
+        if sess["index"] == expected_idx:
+            queue = sess["queue"]
+            if expected_idx < len(queue):
+                target_text = queue[expected_idx].get("text", "")
+                await bot.send_message(chat_id, f"⚠️ **تسكيب تلقائي:** محد تجاوب (`{target_text}`)")
+                sess["index"] += 1
+                await play_current_voice(chat_id)
 
 async def play_current_voice(chat_id):
     sess = active_sessions.get(chat_id)
@@ -224,7 +228,7 @@ async def play_current_voice(chat_id):
     queue = sess["queue"]
 
     if idx >= len(queue):
-        await bot.send_message(chat_id, f"✅ **انتهاء الصوتيات في هذا القسم.**")
+        await bot.send_message(chat_id, "✅ **انتهاء الصوتيات في هذا القسم.**")
         await stop_and_leave_call(chat_id)
         return
 
@@ -244,7 +248,7 @@ async def play_current_voice(chat_id):
     total_wait = duration + 4.0
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
 
-# ==================== [ المعالج الرئيسي للرسائل ] ====================
+# ==================== [ معالجة الرسائل ] ====================
 
 @bot.on(events.NewMessage)
 async def main_handler(event):
@@ -252,20 +256,10 @@ async def main_handler(event):
         return
 
     chat_id = event.chat_id
-    msg_id = event.id
-    
-    # منع التكرار على مستوى معرف الرسالة
-    unique_key = f"{chat_id}_{msg_id}"
-    if unique_key in processed_msgs:
-        return
-    processed_msgs.add(unique_key)
-    if len(processed_msgs) > 2000:
-        processed_msgs.clear()
-
     text = event.raw_text.strip() if event.raw_text else ""
     user_id = event.sender_id
 
-    # 1. الرسائل الخاصة
+    # 1. الخاص
     if event.is_private:
         if text.startswith("/start"):
             if user_id in db["blocked_users"]:
@@ -279,23 +273,24 @@ async def main_handler(event):
             state = user_states[user_id]
             action = state.get("action")
 
-            # حل مشكلة طلب كود الدخول
             if action == "awaiting_phone_number":
-                phone = text.replace(" ", "").strip()
+                phone = text.replace(" ", "").replace("-", "").strip()
                 try:
-                    c = TelegramClient(StringSession(), API_ID, API_HASH)
-                    await c.connect()
-                    res = await c.send_code_request(phone)
+                    client = TelegramClient(StringSession(), API_ID, API_HASH)
+                    await client.connect()
+                    
+                    # طلب إرسال الكود للرقم
+                    sent_code = await client.send_code_request(phone)
                     
                     login_clients[user_id] = {
-                        "client": c,
+                        "client": client,
                         "phone": phone,
-                        "hash": res.phone_code_hash
+                        "phone_code_hash": sent_code.phone_code_hash
                     }
                     user_states[user_id] = {"action": "awaiting_phone_code"}
-                    return await event.reply("📲 **وصلك الكود!** أدخله هنا الآن:")
+                    return await event.reply("📲 **تم إرسال الكود في تطبيق تليجرام!**\n\nأدخل الكود هنا (مثال: `12345`):")
                 except PhoneNumberInvalidError:
-                    return await event.reply("❌ الرقم غير صحيح. أعد كتابته مع الرقم الدولي (مثال +964...):")
+                    return await event.reply("❌ الرقم غير صحيح! اكتبه بالصيغة الدولية مثل: `+9647700000000`")
                 except Exception as e:
                     user_states.pop(user_id, None)
                     return await event.reply(f"❌ فشل إرسال الكود: `{e}`")
@@ -304,13 +299,13 @@ async def main_handler(event):
                 sess_data = login_clients.get(user_id)
                 if not sess_data:
                     user_states.pop(user_id, None)
-                    return await event.reply("❌ انتهت الجلسة. أعد المحاولة من البداية.")
+                    return await event.reply("❌ انتهت الجلسة. اضغط تسجيل الدخول مجدداً.")
 
-                c = sess_data["client"]
+                client = sess_data["client"]
                 code = re.sub(r'\D', '', text)
                 try:
-                    await c.sign_in(phone=sess_data["phone"], code=code, phone_code_hash=sess_data["hash"])
-                    session_str = c.session.save()
+                    await client.sign_in(phone=sess_data["phone"], code=code, phone_code_hash=sess_data["phone_code_hash"])
+                    session_str = client.session.save()
                     db["assistant_session"] = session_str
                     save_data(db)
 
@@ -318,12 +313,12 @@ async def main_handler(event):
                     user_states.pop(user_id, None)
 
                     await init_assistant_session()
-                    return await event.reply("✅ **تم تسجيل الدخول بنجاح وحفظ الحساب المساعد!**")
+                    return await event.reply("✅ **تم تسجيل الدخول بنجاح وتفعيل الحساب المساعد!**")
                 except PhoneCodeInvalidError:
-                    return await event.reply("❌ الكود غير صحيح، أعد إرساله:")
+                    return await event.reply("❌ الكود خاطئ! تأكد منه وأعد إرساله:")
                 except SessionPasswordNeededError:
                     user_states[user_id] = {"action": "awaiting_2fa"}
-                    return await event.reply("🔐 **الحساب محمي بالتحقق بخطوتين.** أرسل كلمة السر:")
+                    return await event.reply("🔐 **الحساب يحتوي تحقق بخطوتين.** أرسل كلمة السر:")
                 except Exception as e:
                     user_states.pop(user_id, None)
                     login_clients.pop(user_id, None)
@@ -334,10 +329,10 @@ async def main_handler(event):
                 if not sess_data:
                     user_states.pop(user_id, None)
                     return await event.reply("❌ انتهت الجلسة.")
-                c = sess_data["client"]
+                client = sess_data["client"]
                 try:
-                    await c.sign_in(password=text)
-                    session_str = c.session.save()
+                    await client.sign_in(password=text)
+                    session_str = client.session.save()
                     db["assistant_session"] = session_str
                     save_data(db)
 
@@ -345,9 +340,9 @@ async def main_handler(event):
                     user_states.pop(user_id, None)
 
                     await init_assistant_session()
-                    return await event.reply("✅ **تم فتح كلمة السر وتشغيل الحساب المساعد!**")
+                    return await event.reply("✅ **تمت المطابقة وتفعيل الحساب المساعد بنجاح!**")
                 except Exception as e:
-                    return await event.reply(f"❌ كلمة السر خطأ: `{e}`")
+                    return await event.reply(f"❌ كلمة السر غير صحيحة: `{e}`")
 
             elif action == "awaiting_voice_to_delete":
                 p_id = state.get("provider_id")
@@ -422,7 +417,7 @@ async def main_handler(event):
                 user_states.pop(user_id, None)
                 return await event.reply("✅ تم الحفظ.", buttons=provider_voices_keyboard(p_id))
 
-    # 2. رسائل المجموعات
+    # 2. المجموعات
     else:
         if text == "تفعيل":
             is_admin = user_id in db["developers"]
@@ -452,66 +447,54 @@ async def main_handler(event):
                 return await event.reply("👋 تم النزول.")
             return await event.reply("⚠️ البوت غير متصل.")
 
-        # التحقق من إجابة المتسابق وإيقاف التكرار فوراً
+        # التثبيت الكامل للحد من التكرار عبر Async Lock
         sess = active_sessions.get(chat_id)
-        if sess and not sess.get("is_processing"):
-            queue, idx = sess["queue"], sess["index"]
-            if idx < len(queue):
-                target_text = queue[idx].get("text", "")
-                norm_single, norm_target = normalize_text(text), normalize_text(target_text)
-                digits_single, digits_target = extract_numbers(text), extract_numbers(target_text)
+        if sess:
+            lock = get_chat_lock(chat_id)
+            async with lock:
+                # إعادة الجلب للتأكد من حالة الفهرس الحالية
+                queue, idx = sess["queue"], sess["index"]
+                if idx < len(queue):
+                    target_text = queue[idx].get("text", "")
+                    norm_single, norm_target = normalize_text(text), normalize_text(target_text)
+                    digits_single, digits_target = extract_numbers(text), extract_numbers(target_text)
 
-                matched = False
-                if norm_target and (norm_target == norm_single or norm_target in norm_single):
-                    matched = True
-                elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
-                    matched = True
+                    matched = False
+                    if norm_target and (norm_target == norm_single or norm_target in norm_single):
+                        matched = True
+                    elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
+                        matched = True
 
-                if matched:
-                    # إغلاق الجلسة لمنع أي تكرار معالجة بنفس الوقت
-                    sess["is_processing"] = True
-                    
-                    if sess.get("timer_task"):
-                        sess["timer_task"].cancel()
-                        sess["timer_task"] = None
+                    if matched:
+                        # زيادة رقم الصوتية فوراً لمنع أي معالجة ثانية بنفس الوقت
+                        sess["index"] += 1
+                        
+                        if sess.get("timer_task"):
+                            sess["timer_task"].cancel()
+                            sess["timer_task"] = None
 
-                    sess["index"] += 1
-                    
-                    # الرد مرة واحدة فقط عبر معرف المجموعة
-                    await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
-                    
-                    sess["is_processing"] = False
-                    await play_current_voice(chat_id)
+                        await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
+                        await play_current_voice(chat_id)
 
-# ==================== [ تشغيل الاتصال خلف الكواليس ] ====================
+# ==================== [ تشغيل الاتصال ] ====================
 
 async def process_start_play(event, p_id, category):
     chat_id = event.chat_id
     if not assistant_client or not pytgcalls_client:
-        return await event.respond("❌ الحساب المساعد غير متصل! ربطه من إعدادات المطور أولاً.")
+        return await event.respond("❌ الحساب المساعد غير متصل! أضفه من إعدادات المطور أولاً.")
 
     voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
     if not voices_list:
         return await event.respond("⚠️ لا توجد فويسات في هذا القسم!")
 
-    is_in_chat = False
     try:
         await assistant_client.get_entity(chat_id)
-        is_in_chat = True
     except Exception:
-        is_in_chat = False
-
-    if not is_in_chat:
         try:
             invite = await bot(ExportChatInviteRequest(chat_id))
             match = re.search(r'(?:joinchat/|\+)([\w-]+)', invite.link)
             if match:
-                hash_code = match.group(1)
-                await assistant_client(ImportChatInviteRequest(hash_code))
-            else:
-                return await event.respond("❌ تعذر استخراج رابط الدعوة.")
-        except ChatAdminRequiredError:
-            return await event.respond("❌ ارفع البوت مشرفاً بصلاحية الدعوة.")
+                await assistant_client(ImportChatInviteRequest(match.group(1)))
         except UserAlreadyParticipantError:
             pass
         except Exception as e:
@@ -524,14 +507,14 @@ async def process_start_play(event, p_id, category):
         active_sessions[chat_id] = {
             "queue": voices_list, "index": 0,
             "provider_name": db.get("providers", {}).get(p_id, {}).get("name", p_id),
-            "category_name": category, "is_processing": False, "timer_task": None
+            "category_name": category, "timer_task": None
         }
         await play_current_voice(chat_id)
         await event.delete()
     except Exception as e:
         await event.respond(f"❌ خطأ التشغيل: `{e}`")
 
-# ==================== [ معالج الأزرار Inline ] ====================
+# ==================== [ أزرار القوائم ] ====================
 
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
@@ -551,7 +534,7 @@ async def callback_handler(event):
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
         elif data == "login_by_phone" and user_id in db["developers"]:
             user_states[user_id] = {"action": "awaiting_phone_number"}
-            await event.edit("📞 أرسل رقم الهاتف مع المفتاح الدولي (مثال: +9647700000000):")
+            await event.edit("📞 أرسل رقم الهاتف المساعد بالصيغة الدولية (مثال: +9647700000000):")
         elif data == "remove_assistant" and user_id in db["developers"]:
             db["assistant_session"] = None
             save_data(db)
@@ -608,7 +591,7 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ خادم الويب لتخطي إغلاق الاستضافة ] ====================
+# ==================== [ تشغيل السيرفر ] ====================
 
 async def handle_ping(request):
     return web.Response(text="Bot Alive")
@@ -623,7 +606,7 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
-    print(f"🌐 HTTP Server Started on Port {port}")
+    print(f"🌐 Web Server Port: {port}")
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
     await bot.run_until_disconnected()
