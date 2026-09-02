@@ -1,9 +1,11 @@
 import os
+import sys
 import json
 import re
 import asyncio
 import wave
 import contextlib
+import fcntl
 from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
@@ -17,6 +19,15 @@ from telethon.errors import (
 )
 
 from pytgcalls import PyTgCalls
+
+# === [ قفل النظام لمنع تكرار تشغيل العمليات على Render ] ===
+lock_file_path = '/tmp/bot_single_instance.lock'
+lock_file = open(lock_file_path, 'w')
+try:
+    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except IOError:
+    print("⚠️ تم اكتشاف عملية مكررة تعمل في الخلفية. يتم إنهاء هذه العملية فوراً لمنع التكرار.")
+    sys.exit(0)
 
 AudioStreamClass = None
 try:
@@ -37,7 +48,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aK
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-# استخدام sequential_updates لمنع التوازيات التي تسبب تكرار الردود في Telethon
+# استخدام sequential_updates=True يمنع Telethon من الاستجابة المتوازية لنفس الحدث
 bot = TelegramClient("voice_bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
@@ -201,7 +212,7 @@ async def init_assistant_session():
                 assistant_client = None
                 pytgcalls_client = None
         except FloodWaitError as e:
-            print(f"⚠️ حظر مؤقت لتليجرام: {e.seconds} ثانية.")
+            print(f"⚠️ حظر مؤقت من تليجرام لمدة {e.seconds} ثانية.")
             assistant_client = None
             pytgcalls_client = None
         except Exception as e:
@@ -268,7 +279,7 @@ async def play_current_voice(chat_id):
     duration = get_audio_duration(file_path)
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 4.0))
 
-# ==================== [ المعالجات ] ====================
+# ==================== [ معالجة الخاص والمجموعات ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
@@ -279,7 +290,7 @@ async def private_handler(event):
     if msg_id in processed_messages:
         return
     processed_messages.add(msg_id)
-    if len(processed_messages) > 500:
+    if len(processed_messages) > 1000:
         processed_messages.pop()
 
     text = event.raw_text.strip() if event.raw_text else ""
@@ -438,7 +449,7 @@ async def group_handler(event):
     if msg_id in processed_messages:
         return
     processed_messages.add(msg_id)
-    if len(processed_messages) > 500:
+    if len(processed_messages) > 1000:
         processed_messages.pop()
 
     chat_id = event.chat_id
@@ -649,7 +660,7 @@ async def main():
     
     asyncio.create_task(auto_backup_loop())
 
-    print("🚀 تم تشغيل البوت بنجاح.")
+    print("🚀 تم تشغيل البوت بنجاح بنسخة واحدة متصلة.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
