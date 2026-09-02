@@ -12,7 +12,8 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 from telethon.sessions import StringSession
 from telethon.errors import (
     MessageNotModifiedError, UserAlreadyParticipantError,
-    PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError
+    PhoneNumberInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, SessionPasswordNeededError,
+    FloodWaitError
 )
 
 from pytgcalls import PyTgCalls
@@ -36,7 +37,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aK
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-bot = TelegramClient("voice_bot_session", API_ID, API_HASH)
+# استخدام sequential_updates لمنع التوازيات التي تسبب تكرار الردود في Telethon
+bot = TelegramClient("voice_bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
 
@@ -71,7 +73,7 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 chat_locks = {}
-processed_messages = set()  # مانع التكرار الجذري للرسائل المعالجة
+processed_messages = set()
 
 def get_lock(chat_id):
     if chat_id not in chat_locks:
@@ -198,6 +200,10 @@ async def init_assistant_session():
             else:
                 assistant_client = None
                 pytgcalls_client = None
+        except FloodWaitError as e:
+            print(f"⚠️ حظر مؤقت لتليجرام: {e.seconds} ثانية.")
+            assistant_client = None
+            pytgcalls_client = None
         except Exception as e:
             print(f"❌ خطأ الحساب المساعد: {e}")
             assistant_client = None
@@ -262,19 +268,18 @@ async def play_current_voice(chat_id):
     duration = get_audio_duration(file_path)
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 4.0))
 
-# ==================== [ معالجة الخاص ] ====================
+# ==================== [ المعالجات ] ====================
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
     if event.out:
         return
 
-    # منع التكرار بالمعرف الفريد للرسالة
-    msg_unique_id = (event.chat_id, event.id)
-    if msg_unique_id in processed_messages:
+    msg_id = event.id
+    if msg_id in processed_messages:
         return
-    processed_messages.add(msg_unique_id)
-    if len(processed_messages) > 1000:
+    processed_messages.add(msg_id)
+    if len(processed_messages) > 500:
         processed_messages.pop()
 
     text = event.raw_text.strip() if event.raw_text else ""
@@ -303,7 +308,7 @@ async def private_handler(event):
                     "client": client, "phone": phone, "phone_code_hash": sent_code.phone_code_hash
                 }
                 user_states[user_id] = {"action": "awaiting_phone_code"}
-                return await msg.edit("📲 **أرسل الكود الآن مع إدخال مسافات بين الأرقام (مثال: `1 2 3 4 5`):**")
+                return await msg.edit("📲 **أرسل الكود الآن مع إدخال مسافات بين الأرقام:**")
             except Exception as e:
                 user_states.pop(user_id, None)
                 return await msg.edit(f"❌ خطأ: `{e}`")
@@ -424,19 +429,16 @@ async def private_handler(event):
             user_states.pop(user_id, None)
             return
 
-# ==================== [ معالجة المجموعات مع مانع تكرار ذكي ] ====================
-
-@bot.on(events.NewMessage)
+@bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
-    if event.is_private or event.out:
+    if event.out:
         return
 
-    # منع التكرار الجذري (اذا تمت معالجة نفس ID الرسالة يتم تجاهلها فوراً)
-    msg_unique_id = (event.chat_id, event.id)
-    if msg_unique_id in processed_messages:
+    msg_id = event.id
+    if msg_id in processed_messages:
         return
-    processed_messages.add(msg_unique_id)
-    if len(processed_messages) > 1000:
+    processed_messages.add(msg_id)
+    if len(processed_messages) > 500:
         processed_messages.pop()
 
     chat_id = event.chat_id
@@ -510,8 +512,6 @@ async def group_handler(event):
                     await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
                     await play_current_voice(chat_id)
 
-# ==================== [ تشغيل الاتصال ] ====================
-
 async def process_start_play(event, p_id, category):
     chat_id = event.chat_id
     if not assistant_client or not pytgcalls_client:
@@ -548,8 +548,6 @@ async def process_start_play(event, p_id, category):
     except Exception as e:
         await event.respond(f"❌ خطأ التشغيل: `{e}`")
 
-# ==================== [ أزرار القوائم والتحكم ] ====================
-
 @bot.on(events.CallbackQuery)
 async def callback_handler(event):
     data = event.data.decode("utf-8")
@@ -577,7 +575,7 @@ async def callback_handler(event):
             await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
         elif data == "login_by_phone" and user_id in db.get("developers", []):
             user_states[user_id] = {"action": "awaiting_phone_number"}
-            await event.edit("📞 أرسل رقم الهاتف المساعد بالصيغة الدولية (مثال: +9647700000000):")
+            await event.edit("📞 أرسل رقم الهاتف المساعد بالصيغة الدولية:")
         elif data == "remove_assistant" and user_id in db.get("developers", []):
             db["assistant_session"] = None
             save_data(db)
@@ -634,8 +632,6 @@ async def callback_handler(event):
     except MessageNotModifiedError:
         pass
 
-# ==================== [ نقطة الانطلاق ] ====================
-
 async def handle_ping(request):
     return web.Response(text="Bot Active")
 
@@ -653,7 +649,7 @@ async def main():
     
     asyncio.create_task(auto_backup_loop())
 
-    print("🚀 تم تفعيل مانع التكرار الجذري وتشغيل البوت بنجاح.")
+    print("🚀 تم تشغيل البوت بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
