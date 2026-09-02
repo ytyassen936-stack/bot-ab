@@ -72,8 +72,9 @@ login_clients = {}
 active_sessions = {}
 chat_locks = {}
 
-# سجل مخصص لمنع تكرار معالجة الرسائل
-processed_messages = set()
+# حماية كاملة ومطلقة ضد تكرار المعالجة
+processed_msg_ids = set()
+dedup_lock = asyncio.Lock()
 
 def get_lock(chat_id):
     if chat_id not in chat_locks:
@@ -252,15 +253,14 @@ async def main_handler(event):
     if event.out or event.is_channel:
         return
 
-    # منع التكرار: إذا كانت الرسالة معالجة سابقاً، يتم كسرها فوراً
+    # فحص صارم ومباشر لمنع تكرار الرسالة أكثر من مرة تحت أية ظروف
     msg_key = (event.chat_id, event.id)
-    if msg_key in processed_messages:
-        return
-    processed_messages.add(msg_key)
-
-    # تنظيف السجل لمنع تضخم الذاكرة
-    if len(processed_messages) > 2000:
-        processed_messages.clear()
+    async with dedup_lock:
+        if msg_key in processed_msg_ids:
+            return
+        processed_msg_ids.add(msg_key)
+        if len(processed_msg_ids) > 5000:
+            processed_msg_ids.clear()
 
     chat_id = event.chat_id
     text = event.raw_text.strip() if event.raw_text else ""
@@ -597,7 +597,7 @@ async def main():
 
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 البوت شغال ويرد مرة واحدة فقط!")
+    print("🚀 تم الحظر النهائي لتكرار الأحداث.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
