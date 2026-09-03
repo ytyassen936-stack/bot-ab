@@ -40,8 +40,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
-
-bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
+bot = TelegramClient("bot_session", API_ID, API_HASH)
 assistant_client = None
 pytgcalls_client = None
 
@@ -49,6 +48,14 @@ DATA_FILE = "bot_database.json"
 
 processed_updates = set()
 global_lock = asyncio.Lock()
+
+def is_duplicate_event(event_key):
+    if event_key in processed_updates:
+        return True
+    processed_updates.add(event_key)
+    if len(processed_updates) > 20000:
+        processed_updates.clear()
+    return False
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -193,12 +200,10 @@ async def init_assistant_session():
             if await assistant_client.is_user_authorized():
                 pytgcalls_client = PyTgCalls(assistant_client)
                 await pytgcalls_client.start()
-                print("✅ تم اتصال الحساب المساعد بنجاح!")
             else:
                 assistant_client = None
                 pytgcalls_client = None
-        except Exception as e:
-            print(f"❌ خطأ الحساب المساعد: {e}")
+        except Exception:
             assistant_client = None
             pytgcalls_client = None
 
@@ -224,7 +229,6 @@ async def auto_skip_timer(chat_id, expected_idx, wait_time):
         if sess and sess["index"] == expected_idx:
             queue = sess["queue"]
             if expected_idx < len(queue):
-                # تعديل النص ليكون "محد جاوب" فقط بناءً على الطلب
                 await bot.send_message(chat_id, "⚠️ محد جاوب")
                 sess["index"] += 1
                 await play_current_voice(chat_id)
@@ -263,11 +267,10 @@ async def play_current_voice(chat_id):
         elif hasattr(pytgcalls_client, 'join_group_call'):
             await pytgcalls_client.join_group_call(chat_id, stream)
     except Exception as e:
-        print(f"Error streaming audio: {e}")
+        print(f"Error streaming: {e}")
 
     duration = get_audio_duration(file_path)
 
-    # حساب وقت الإجابة ديناميكياً بحسب طول النص لمنح وقت كافٍ
     text_len = len(target_text.strip())
     extra_time = 5.0
     if text_len > 12:
@@ -277,14 +280,6 @@ async def play_current_voice(chat_id):
 
     total_wait = duration + extra_time
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
-
-def is_duplicate_event(event_key):
-    if event_key in processed_updates:
-        return True
-    processed_updates.add(event_key)
-    if len(processed_updates) > 10000:
-        processed_updates.clear()
-    return False
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
@@ -441,12 +436,11 @@ async def private_handler(event):
 
 @bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
-    chat_id = event.chat_id
-    
-    # حماية مشددة ضد تكرار الاستجابة ونفس التحديثات
-    if event.out or is_duplicate_event(f"grp_{chat_id}_{event.id}"):
+    # الفلترة السريعة جداً لمنع أي استجابة مكررة
+    if event.out or is_duplicate_event(f"m_{event.chat_id}_{event.id}"):
         return
 
+    chat_id = event.chat_id
     text = event.raw_text.strip() if event.raw_text else ""
     user_id = event.sender_id
 
@@ -666,7 +660,6 @@ async def main():
     await start_dummy_server()
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 تم تحديل المهلة ورسالة التسكيب وتفادي التكرار.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
