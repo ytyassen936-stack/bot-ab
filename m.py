@@ -41,23 +41,22 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-# تفعيل المعالجة المتسلسلة لضمان عدم خروج أحداث متوازية
+# sequential_updates تضمن تنفيذ التحديثات بالتسلسل لمنع التكرار
 bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
 
 DATA_FILE = "bot_database.json"
 
-# مخزن عالمي مع القفل لمنع دخول أي تحديث مكرر إطلاقاً
 processed_events = set()
 processed_lock = asyncio.Lock()
 
-async def is_strictly_duplicate(event_id_key):
+async def is_strictly_duplicate(event_key):
     async with processed_lock:
-        if event_id_key in processed_events:
+        if event_key in processed_events:
             return True
-        processed_events.add(event_id_key)
-        if len(processed_events) > 50000:
+        processed_events.add(event_key)
+        if len(processed_events) > 30000:
             processed_events.clear()
         return False
 
@@ -227,21 +226,23 @@ async def stop_and_leave_call(chat_id):
         active_sessions.pop(chat_id, None)
 
 async def auto_skip_timer(chat_id, expected_idx, wait_time):
-    await asyncio.sleep(wait_time)
-    async with get_lock(chat_id):
-        sess = active_sessions.get(chat_id)
-        if sess and sess["index"] == expected_idx:
-            queue = sess["queue"]
-            if expected_idx < len(queue):
+    try:
+        await asyncio.sleep(wait_time)
+        async with get_lock(chat_id):
+            sess = active_sessions.get(chat_id)
+            if sess and sess["index"] == expected_idx:
                 await bot.send_message(chat_id, "⚠️ محد جاوب")
                 sess["index"] += 1
                 await play_current_voice(chat_id)
+    except asyncio.CancelledError:
+        pass
 
 async def play_current_voice(chat_id):
     sess = active_sessions.get(chat_id)
     if not sess or not pytgcalls_client:
         return
 
+    # إلغاء المؤقت القديم
     if sess.get("timer_task"):
         sess["timer_task"].cancel()
         sess["timer_task"] = None
@@ -249,8 +250,9 @@ async def play_current_voice(chat_id):
     idx = sess["index"]
     queue = sess["queue"]
 
+    # عند الانتهاء الكامل من جميع صوتيات الفئة
     if idx >= len(queue):
-        await bot.send_message(chat_id, "✅ **انتهاء الصوتيات في هذا القسم.**")
+        await bot.send_message(chat_id, "\nتم انتهائ الفئه")
         await stop_and_leave_call(chat_id)
         return
 
@@ -287,7 +289,6 @@ async def play_current_voice(chat_id):
 
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def private_handler(event):
-    # التحقق من التكرار باستخدام القفل المباشر قبل أي أداء
     if event.out or await is_strictly_duplicate(f"pm_{event.chat_id}_{event.id}"):
         return
 
@@ -440,7 +441,6 @@ async def private_handler(event):
 
 @bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
-    # منع معالجة نفس الرسالة بنفس الوقت إطلاقاً عبر نظام القفل الصارم
     if event.out or await is_strictly_duplicate(f"grp_{event.chat_id}_{event.id}"):
         return
 
@@ -565,7 +565,6 @@ async def callback_handler(event):
     if await is_strictly_duplicate(f"cb_{event.chat_id}_{event.id}"):
         return
 
-    # إعلام تلغرام باستلام الأزرار فوراً لتجنب التكرار
     try: await event.answer()
     except Exception: pass
 
@@ -664,9 +663,19 @@ async def start_dummy_server():
 
 async def main():
     await start_dummy_server()
-    await bot.start(bot_token=BOT_TOKEN)
-    await init_assistant_session()
-    await bot.run_until_disconnected()
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            await init_assistant_session()
+            print("🚀 Bot started running...")
+            await bot.run_until_disconnected()
+            break
+        except FloodWaitError as e:
+            print(f"⚠️ Telegram FloodWait: Sleeping for {e.seconds} seconds...")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            print(f"❌ Startup Error: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
