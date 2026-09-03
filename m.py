@@ -41,8 +41,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-# تقييد البوت بووركر واحد لمنع التكرار الناتجة عن المعالجة المتوازية
-bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True, workers=1)
+# السطر المعدل لضمان المعالجة المتسلسلة بدون مشاكل تشغيل
+bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
 
