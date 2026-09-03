@@ -4,6 +4,7 @@ import json
 import re
 import asyncio
 import wave
+import random
 import contextlib
 from aiohttp import web
 from telethon import TelegramClient, events, Button
@@ -35,7 +36,7 @@ except ImportError:
 
 API_ID = int(os.environ.get("API_ID", 34733680))
 API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1hFu4nqaU")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8766360875:AAFUL_3pXZ8MdKoTeusTmKOJh6aKGte26vw")
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
@@ -78,6 +79,7 @@ user_states = {}
 login_clients = {}
 active_sessions = {}
 chat_locks = {}
+user_message_buffers = {}
 
 def get_lock(chat_id):
     if chat_id not in chat_locks:
@@ -87,6 +89,7 @@ def get_lock(chat_id):
 def normalize_text(text):
     if not text:
         return ""
+    # إزالة كافة المسافات والرموز والتشكيل للتعامل مع التفكيك مثل (ا ح م د)
     text = re.sub(r'[\s\-_.\u064B-\u0652]', '', str(text))
     text = text.replace('ة', 'ه').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     return text.lower()
@@ -427,8 +430,6 @@ async def private_handler(event):
 @bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
     chat_id = event.chat_id
-    
-    # قفل الرسالة فوراً ومنع أي معالجة إضافية في حال إرسال نفس الرسالة 3 مرات
     if event.out or is_duplicate_event(f"grp_{chat_id}_{event.id}"):
         return
 
@@ -477,14 +478,20 @@ async def group_handler(event):
             if not curr_sess:
                 return
 
+            buf_key = f"{chat_id}_{user_id}"
+            current_buffer = user_message_buffers.get(buf_key, "") + " " + text
+            user_message_buffers[buf_key] = current_buffer.strip()
+
             queue = curr_sess.get("queue", [])
             idx = curr_sess.get("index", 0)
 
             if idx < len(queue):
                 target_text = queue[idx].get("text", "")
-                norm_single = normalize_text(text)
+                
+                # المعالجة الدقيقة للنصوص المقسمة والأحرف المفككة
+                norm_single = normalize_text(user_message_buffers[buf_key])
                 norm_target = normalize_text(target_text)
-                digits_single = extract_numbers(text)
+                digits_single = extract_numbers(user_message_buffers[buf_key])
                 digits_target = extract_numbers(target_text)
 
                 matched = False
@@ -494,6 +501,7 @@ async def group_handler(event):
                     matched = True
 
                 if matched:
+                    user_message_buffers.pop(buf_key, None)
                     curr_sess["index"] += 1
                     if curr_sess.get("timer_task"):
                         curr_sess["timer_task"].cancel()
@@ -507,9 +515,13 @@ async def process_start_play(event, p_id, category):
     if not assistant_client or not pytgcalls_client:
         return await event.respond("❌ الحساب المساعد غير متصل! أضفه من إعدادات المطور أولاً.")
 
-    voices_list = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
-    if not voices_list:
+    raw_voices = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
+    if not raw_voices:
         return await event.respond("⚠️ لا توجد فويسات في هذا القسم!")
+
+    # عمل نسخة مقلوبة/مخلوطة بشكل عشوائي لضمان عدم التكرار والترتيب العشوائي
+    voices_list = list(raw_voices)
+    random.shuffle(voices_list)
 
     try:
         await assistant_client.get_entity(chat_id)
@@ -642,8 +654,9 @@ async def main():
     await start_dummy_server()
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 تم الحفظ والتعديل بنجاح.")
+    print("🚀 تم تعديل آلية العشوائية والمعالجة بنجاح.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
