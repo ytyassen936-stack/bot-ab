@@ -41,23 +41,21 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-# تفعيل sequential_updates لضمان معالجة التحديثات بالتسلسل ومنع الرد المزدوج
 bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
 assistant_client = None
 pytgcalls_client = None
 
 DATA_FILE = "bot_database.json"
 
-# منع التكرار الشامل لجميع الأحداث
 processed_events = set()
 processed_lock = asyncio.Lock()
 
-async def is_duplicate_event(event_id):
+async def is_duplicate_event(event_key):
     async with processed_lock:
-        if event_id in processed_events:
+        if event_key in processed_events:
             return True
-        processed_events.add(event_id)
-        if len(processed_events) > 20000:
+        processed_events.add(event_key)
+        if len(processed_events) > 30000:
             processed_events.clear()
         return False
 
@@ -285,7 +283,6 @@ async def play_current_voice(chat_id):
     total_wait = duration + extra_time
     sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
 
-# دمج كل معالجة الرسائل بداخل هاندر واحد لضمان عدم التكرار والاصطدام
 @bot.on(events.NewMessage)
 async def global_message_handler(event):
     if event.out:
@@ -299,7 +296,6 @@ async def global_message_handler(event):
     user_id = event.sender_id
     chat_id = event.chat_id
 
-    # 1. إذا كانت الرسالة في الخاص (Private)
     if event.is_private:
         if text.startswith("/start"):
             if user_id in db.get("blocked_users", []):
@@ -445,7 +441,6 @@ async def global_message_handler(event):
                 user_states.pop(user_id, None)
                 return
 
-    # 2. إذا كانت الرسالة في المجموعات (Group / Channel)
     else:
         if text == "تفعيل":
             is_admin = user_id in db.get("developers", [])
@@ -666,6 +661,10 @@ async def main():
     while True:
         try:
             await bot.start(bot_token=BOT_TOKEN)
+            try:
+                await bot.catch_up()
+            except Exception:
+                pass
             await init_assistant_session()
             print("🚀 Bot started running...")
             await bot.run_until_disconnected()
