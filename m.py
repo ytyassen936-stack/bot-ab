@@ -89,7 +89,6 @@ def get_lock(chat_id):
 def normalize_text(text):
     if not text:
         return ""
-    # إزالة كافة المسافات والرموز والتشكيل للتعامل مع التفكيك مثل (ا ح م د)
     text = re.sub(r'[\s\-_.\u064B-\u0652]', '', str(text))
     text = text.replace('ة', 'ه').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     return text.lower()
@@ -225,8 +224,8 @@ async def auto_skip_timer(chat_id, expected_idx, wait_time):
         if sess and sess["index"] == expected_idx:
             queue = sess["queue"]
             if expected_idx < len(queue):
-                target_text = queue[expected_idx].get("text", "")
-                await bot.send_message(chat_id, f"⚠️ **تسكيب تلقائي:** محد تجاوب (`{target_text}`)")
+                # تعديل النص ليكون "محد جاوب" فقط بناءً على الطلب
+                await bot.send_message(chat_id, "⚠️ محد جاوب")
                 sess["index"] += 1
                 await play_current_voice(chat_id)
 
@@ -247,7 +246,10 @@ async def play_current_voice(chat_id):
         await stop_and_leave_call(chat_id)
         return
 
-    file_path = queue[idx].get("file")
+    item = queue[idx]
+    file_path = item.get("file")
+    target_text = item.get("text", "")
+
     try:
         if AudioParametersClass:
             stream = AudioStreamClass(file_path, parameters=AudioParametersClass(bitrate=48000))
@@ -264,13 +266,23 @@ async def play_current_voice(chat_id):
         print(f"Error streaming audio: {e}")
 
     duration = get_audio_duration(file_path)
-    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, duration + 5.0))
+
+    # حساب وقت الإجابة ديناميكياً بحسب طول النص لمنح وقت كافٍ
+    text_len = len(target_text.strip())
+    extra_time = 5.0
+    if text_len > 12:
+        extra_time = 9.0
+    elif text_len > 6:
+        extra_time = 7.0
+
+    total_wait = duration + extra_time
+    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
 
 def is_duplicate_event(event_key):
     if event_key in processed_updates:
         return True
     processed_updates.add(event_key)
-    if len(processed_updates) > 5000:
+    if len(processed_updates) > 10000:
         processed_updates.clear()
     return False
 
@@ -430,6 +442,8 @@ async def private_handler(event):
 @bot.on(events.NewMessage(func=lambda e: e.is_group or e.is_channel))
 async def group_handler(event):
     chat_id = event.chat_id
+    
+    # حماية مشددة ضد تكرار الاستجابة ونفس التحديثات
     if event.out or is_duplicate_event(f"grp_{chat_id}_{event.id}"):
         return
 
@@ -488,7 +502,6 @@ async def group_handler(event):
             if idx < len(queue):
                 target_text = queue[idx].get("text", "")
                 
-                # المعالجة الدقيقة للنصوص المقسمة والأحرف المفككة
                 norm_single = normalize_text(user_message_buffers[buf_key])
                 norm_target = normalize_text(target_text)
                 digits_single = extract_numbers(user_message_buffers[buf_key])
@@ -519,7 +532,6 @@ async def process_start_play(event, p_id, category):
     if not raw_voices:
         return await event.respond("⚠️ لا توجد فويسات في هذا القسم!")
 
-    # عمل نسخة مقلوبة/مخلوطة بشكل عشوائي لضمان عدم التكرار والترتيب العشوائي
     voices_list = list(raw_voices)
     random.shuffle(voices_list)
 
@@ -654,9 +666,8 @@ async def main():
     await start_dummy_server()
     await bot.start(bot_token=BOT_TOKEN)
     await init_assistant_session()
-    print("🚀 تم تعديل آلية العشوائية والمعالجة بنجاح.")
+    print("🚀 تم تحديل المهلة ورسالة التسكيب وتفادي التكرار.")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
-
