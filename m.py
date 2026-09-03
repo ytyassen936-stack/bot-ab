@@ -41,12 +41,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1h
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
 DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
 
-bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
+# تقييد البوت بووركر واحد لمنع التكرار الناتجة عن المعالجة المتوازية
+bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True, workers=1)
 assistant_client = None
 pytgcalls_client = None
 
 DATA_FILE = "bot_database.json"
 
+# مصفوفة وقفل لمنع تكرار الأحداث
 processed_events = set()
 processed_lock = asyncio.Lock()
 
@@ -55,7 +57,7 @@ async def is_duplicate_event(event_key):
         if event_key in processed_events:
             return True
         processed_events.add(event_key)
-        if len(processed_events) > 30000:
+        if len(processed_events) > 50000:
             processed_events.clear()
         return False
 
@@ -506,8 +508,9 @@ async def global_message_handler(event):
                         matched = True
 
                     if matched:
-                        user_message_buffers.pop(buf_key, None)
                         curr_sess["index"] += 1
+                        user_message_buffers.pop(buf_key, None)
+                        
                         if curr_sess.get("timer_task"):
                             curr_sess["timer_task"].cancel()
                             curr_sess["timer_task"] = None
@@ -661,10 +664,6 @@ async def main():
     while True:
         try:
             await bot.start(bot_token=BOT_TOKEN)
-            try:
-                await bot.catch_up()
-            except Exception:
-                pass
             await init_assistant_session()
             print("🚀 Bot started running...")
             await bot.run_until_disconnected()
