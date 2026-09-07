@@ -13,7 +13,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 
 # ==================== الإعدادات الأساسية ====================
-BOT_TOKEN = "8738113127:AAFWxlU4O_PUS_18w80uibe6RdoP6S80A_E"
+BOT_TOKEN = "8942894582:AAGpIB2ZPoFGUm0VFMcJApZ1hrWNl9Ry9mU"
 OWNER_ID = 7493679412  # ضع ايديك (ID) هنا كمالك أساسي للبوت
 DEVELOPER_LINK = "https://t.me/XX7X6"  # رابط حسابك المباشر
 
