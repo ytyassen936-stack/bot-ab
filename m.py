@@ -3,6 +3,7 @@ import re
 import json
 import asyncio
 import subprocess
+import zipfile
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,11 +15,10 @@ from telegram.request import HTTPXRequest
 # ==================== الإعدادات الأساسية ====================
 BOT_TOKEN = "8738113127:AAFWxlU4O_PUS_18w80uibe6RdoP6S80A_E"
 OWNER_ID = 7493679412  # ضع ايديك (ID) هنا كمالك أساسي للبوت
-DEVELOPER_LINK = "https://t.me/XX7X6"  # رابط حسابك المباشر مع t.me/
+DEVELOPER_LINK = "https://t.me/XX7X6"  # رابط حسابك المباشر
 
-# الـ API ID و API HASH الثابتة الخاصة بك
-API_ID = 34733680  # ضع الـ API ID الخاص بك هنا
-API_HASH = "dc47a14a8d693f8afbb73237d2ad7de8"  # ضع الـ API HASH الخاص بك هنا
+API_ID = 34733680  # الـ API ID
+API_HASH = "dc47a14a8d693f8afbb73237d2ad7de8"  # الـ API HASH
 
 DB_FILE = "bot_database.json"
 HOST_DIR = "./hosted_bots"
@@ -31,8 +31,8 @@ def load_db():
     default_db = {
         "developers": [OWNER_ID],
         "banned_users": [],
-        "subscribers": {},    # {"user_id": "expire_date_iso"} (1 بوت)
-        "vip_subscribers": {},# {"user_id": "expire_date_iso"} (3 بوتات)
+        "subscribers": {},    # {"user_id": "expire_date_iso"}
+        "vip_subscribers": {},# {"user_id": "expire_date_iso"}
         "free_mode": False,
         "force_channel": ""
     }
@@ -46,7 +46,6 @@ def load_db():
             data = json.load(f)
             
         updated = False
-        # تحويل الهياكل القديمة (القوائم) إلى قواميس لإنفاذ التواريخ إن وجدت
         if isinstance(data.get("subscribers"), list):
             data["subscribers"] = {str(uid): (datetime.now() + timedelta(days=365)).isoformat() for uid in data["subscribers"]}
             updated = True
@@ -82,11 +81,9 @@ def is_banned(user_id):
     return user_id in db.get("banned_users", [])
 
 def check_subscription_expiry(user_id):
-    """التحقق من صلاحية الاشتراك وإزالته إذا انتهى الوقت"""
     uid_str = str(user_id)
     now = datetime.now()
     
-    # فحص الاشتراك العادي
     if uid_str in db.get("subscribers", {}):
         exp_date = datetime.fromisoformat(db["subscribers"][uid_str])
         if now > exp_date:
@@ -95,7 +92,6 @@ def check_subscription_expiry(user_id):
             return False
         return True
 
-    # فحص اشتراك VIP
     if uid_str in db.get("vip_subscribers", {}):
         exp_date = datetime.fromisoformat(db["vip_subscribers"][uid_str])
         if now > exp_date:
@@ -123,11 +119,11 @@ def is_authorized(user_id):
 
 def get_max_bots(user_id):
     if is_dev(user_id):
-        return 999  # مطور (غير محدود)
+        return 999
     if is_vip(user_id):
-        return 3    # مشترك VIP (3 بوتات)
+        return 3
     if is_authorized(user_id):
-        return 1    # مشترك عادي أو وضع مجاني (1 بوت)
+        return 1
     return 0
 
 def get_user_files(user_id):
@@ -199,10 +195,11 @@ def get_dev_keyboard():
          InlineKeyboardButton("📢 إذاعة", callback_data="broadcast")],
         [InlineKeyboardButton("📢 الاشتراك الإجباري", callback_data="set_force_channel")],
         [InlineKeyboardButton(f"🆓 الوضع المجاني ({free_status})", callback_data="toggle_free")],
-        [InlineKeyboardButton("➕ إضافة مشترك عادي (1 بوت)", callback_data="add_sub"),
-         InlineKeyboardButton("⭐ إضافة مشترك VIP (3 بوتات)", callback_data="add_vip")],
-        [InlineKeyboardButton("➕ إضافة مطور", callback_data="add_dev")],
-        [InlineKeyboardButton("📦 جلب نسخة احتياطية", callback_data="get_backup"),
+        [InlineKeyboardButton("➕ إضافة مشترك عادي", callback_data="add_sub"),
+         InlineKeyboardButton("⭐ إضافة مشترك VIP", callback_data="add_vip")],
+        [InlineKeyboardButton("➕ إضافة مطور", callback_data="add_dev"),
+         InlineKeyboardButton("➖ حذف مطور", callback_data="remove_dev")],
+        [InlineKeyboardButton("📦 جلب نسخة احتياطية كاملة", callback_data="get_backup"),
          InlineKeyboardButton("📥 رفع نسخة احتياطية", callback_data="restore_backup")]
     ]
     return InlineKeyboardMarkup(buttons)
@@ -235,7 +232,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # === زر إضافة ملف ===
     if data == "upload_file":
         if not is_authorized(user_id):
             await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
@@ -253,7 +249,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_file"] = True
         await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم إضافته فوراً إلى قائمة ملفاتك.")
 
-    # === زر ملفاتي ===
     elif data == "my_files":
         files = get_user_files(user_id)
         if not files:
@@ -273,7 +268,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
         await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-    # === زر تشغيل ملف ===
     elif data == "run_file_menu":
         if not is_authorized(user_id):
             await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
@@ -292,7 +286,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
         await query.message.reply_text("اختر الملف الذي تريد تشغيله من قائمة ملفاتك:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    # === تشغيل ملف محدد ===
     elif data.startswith("run_"):
         file_name = data.replace("run_", "")
         file_path = os.path.join(HOST_DIR, file_name)
@@ -301,7 +294,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ الملف غير موجود في قائمة ملفاتك.")
             return
 
-        # إيقاف التشغيل القديم إن وجد
         if file_path in running_processes:
             try: running_processes[file_path].terminate()
             except Exception: pass
@@ -318,7 +310,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.message.reply_text(f"❌ حدث خطأ أثناء التشغيل:\n`{str(e)}`", parse_mode="Markdown")
 
-    # === حذف ملف محدد ===
     elif data.startswith("del_"):
         file_name = data.replace("del_", "")
         file_path = os.path.join(HOST_DIR, file_name)
@@ -337,7 +328,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_main":
         await query.message.reply_text("القائمة الرئيسية:", reply_markup=get_main_keyboard(user_id))
 
-    # === إعدادات المطورين ===
     elif data == "dev_settings":
         if not is_dev(user_id):
             await query.message.reply_text("❌ هذا الخيار مخصص للمطورين فقط.")
@@ -374,6 +364,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "add_dev"
         await query.message.reply_text("أرسل الـ ID للشخص المراد رفعه مطور:")
 
+    elif data == "remove_dev":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "remove_dev"
+        await query.message.reply_text("أرسل الـ ID للمطور المراد تنزيله من قائمة المطورين:")
+
     elif data == "broadcast":
         if not is_dev(user_id): return
         context.user_data["action"] = "broadcast"
@@ -389,7 +384,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_backup_file"] = True
         await query.message.reply_text("أرسل الآن ملف النسخة الاحتياطية (`.json`).")
 
-# ==================== استقبال الرسائل الإدارية وتحديد الأوقات ====================
+# ==================== استقبال الرسائل الإدارية ====================
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_banned(user_id): return
@@ -412,7 +407,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ يرجى إرسال ID صحيح.")
         context.user_data["action"] = None
 
-    # إضافة مشترك عادي - الخطوة 1: استلام الـ ID
     elif action == "add_sub_step1":
         try:
             context.user_data["temp_target_id"] = int(text)
@@ -421,7 +415,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ يرجى إرسال ID صحيح (أرقام فقط).")
 
-    # إضافة مشترك عادي - الخطوة 2: تحديد وقت وتاريخ الانتهاء
     elif action == "add_sub_step2":
         try:
             days = int(text)
@@ -443,7 +436,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ يرجى إرسال عدد أيام صحيح (أرقام فقط).")
         context.user_data["action"] = None
 
-    # إضافة مشترك VIP - الخطوة 1: استلام الـ ID
     elif action == "add_vip_step1":
         try:
             context.user_data["temp_target_id"] = int(text)
@@ -452,7 +444,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ يرجى إرسال ID صحيح (أرقام فقط).")
 
-    # إضافة مشترك VIP - الخطوة 2: تحديد وقت وتاريخ الانتهاء
     elif action == "add_vip_step2":
         try:
             days = int(text)
@@ -488,6 +479,23 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ يرجى إرسال ID صحيح.")
         context.user_data["action"] = None
 
+    elif action == "remove_dev":
+        try:
+            target_id = int(text)
+            if target_id == OWNER_ID:
+                await update.message.reply_text("❌ لا يمكنك حذف المالك الأساسي للبوت.")
+            else:
+                dev_list = db.get("developers", [])
+                if target_id in dev_list:
+                    dev_list.remove(target_id)
+                    save_db(db)
+                    await update.message.reply_text(f"✅ تم حذف المستخدم `{target_id}` من قائمة المطورين.")
+                else:
+                    await update.message.reply_text("⚠️ هذا المستخدم ليس مطوراً في القائمة.")
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال ID صحيح.")
+        context.user_data["action"] = None
+
     elif action == "broadcast":
         context.user_data["action"] = None
         count = 0
@@ -514,7 +522,6 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     file_name = doc.file_name
 
-    # استعادة نسخة احتياطية
     if context.user_data.get("awaiting_backup_file"):
         if is_dev(user_id) and file_name.endswith('.json'):
             file = await context.bot.get_file(doc.file_id)
@@ -525,7 +532,6 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_backup_file"] = False
             return
 
-    # رفع ملف وإضافته إلى "قائمة ملفاتي"
     if context.user_data.get("awaiting_file"):
         if not is_authorized(user_id):
             await update.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
@@ -542,7 +548,6 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(doc.file_id)
         await file.download_to_drive(file_path)
 
-        # تثبيت المكتبات تلقائياً
         modules = extract_requirements(file_path)
         if modules:
             await status_msg.edit_text(f"📦 جاري تثبيت المكتبات المطلوبة تلقائياً:\n`{', '.join(modules)}`...")
@@ -561,30 +566,42 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["awaiting_file"] = False
 
-# ==================== النسخ الاحتياطي التلقائي ====================
+# ==================== النسخ الاحتياطي التلقائي الشامل ====================
 async def send_backup(bot, target_id=OWNER_ID):
-    zip_path = "hosted_bots_backup.zip"
-    subprocess.run(["zip", "-r", zip_path, HOST_DIR]) if os.path.exists(HOST_DIR) else None
-
-    if os.path.exists(DB_FILE):
-        try:
-            await bot.send_document(
-                chat_id=target_id,
-                document=open(DB_FILE, "rb"),
-                caption=f"📦 **نسخة احتياطية لقاعدة البيانات**\n📅 التاريخ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
-                parse_mode="Markdown"
-            )
-        except Exception: pass
+    zip_path = "full_bot_backup.zip"
     
-    if os.path.exists(zip_path):
-        try:
+    try:
+        # إنشاء ملف zip شامل يحتوي على البوتات المرفوعة، قاعدة البيانات، وسكربت البوت الأساسي
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            if os.path.exists(HOST_DIR):
+                for root, dirs, files in os.walk(HOST_DIR):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, os.path.dirname(HOST_DIR))
+                        zipf.write(file_path, arcname)
+            
+            if os.path.exists(DB_FILE):
+                zipf.write(DB_FILE, os.path.basename(DB_FILE))
+                
+            # إضافة ملف البوت الرئيسي
+            main_script = os.path.basename(__file__)
+            if os.path.exists(main_script):
+                zipf.write(main_script, main_script)
+
+        if os.path.exists(zip_path):
             await bot.send_document(
                 chat_id=target_id,
                 document=open(zip_path, "rb"),
-                caption="📂 **نسخة احتياطية للملفات المرفوعة.**"
+                caption=f"📦 **نسخة احتياطية شاملة للبوت بالكامل**\n\n"
+                        f"• تحتوي على قاعدة البيانات\n"
+                        f"• جميع ملفات البوتات المرفوعة للمستخدمين\n"
+                        f"• كود البوت الرئيسي\n\n"
+                        f"📅 التاريخ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
+                parse_mode="Markdown"
             )
-        except Exception: pass
-        os.remove(zip_path)
+            os.remove(zip_path)
+    except Exception as e:
+        print(f"خطأ في إرسال النسخة الاحتياطية: {e}")
 
 async def auto_backup_loop(app):
     while True:
