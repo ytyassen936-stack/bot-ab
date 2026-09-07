@@ -1,679 +1,621 @@
 import os
-import sys
-import json
 import re
+import json
 import asyncio
-import wave
-import random
-import contextlib
-from aiohttp import web
-from telethon import TelegramClient, events, Button
-from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.functions.messages import ExportChatInviteRequest, ImportChatInviteRequest
-from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
-from telethon.sessions import StringSession
-from telethon.errors import (
-    MessageNotModifiedError, UserAlreadyParticipantError,
-    SessionPasswordNeededError, FloodWaitError
+import subprocess
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    filters, ContextTypes
 )
+from telegram.request import HTTPXRequest
 
-from pytgcalls import PyTgCalls
+# ==================== الإعدادات الأساسية ====================
+BOT_TOKEN = "8738113127:AAEYSiIs2e0m7u_4gON5K0b0JJZ0eidv9r8"
+OWNER_ID = 7493679412  # ضع ايديك (ID) هنا كمالك أساسي للبوت
+DEVELOPER_LINK = "https://t.me/XX7X6"  # رابط حسابك المباشر مع t.me/
 
-AudioStreamClass = None
-AudioParametersClass = None
-try:
-    from pytgcalls.types import AudioPiped as AudioStreamClass
-    from pytgcalls.types import AudioParameters
-    AudioParametersClass = AudioParameters
-except ImportError:
+# الـ API ID و API HASH الثابتة الخاصة بك
+API_ID = 34733680  # ضع الـ API ID الخاص بك هنا
+API_HASH = "dc47a14a8d693f8afbb73237d2ad7de8"  # ضع الـ API HASH الخاص بك هنا
+
+DB_FILE = "bot_database.json"
+HOST_DIR = "./hosted_bots"
+
+if not os.path.exists(HOST_DIR):
+    os.makedirs(HOST_DIR)
+
+# ==================== إدارة قاعدة البيانات ====================
+def load_db():
+    default_db = {
+        "developers": [OWNER_ID],
+        "banned_users": [],
+        "subscribers": {},    # {"user_id": "expire_date_iso"} (1 بوت)
+        "vip_subscribers": {},# {"user_id": "expire_date_iso"} (3 بوتات)
+        "free_mode": False,
+        "force_channel": ""
+    }
+    
+    if not os.path.exists(DB_FILE):
+        save_db(default_db)
+        return default_db
+    
     try:
-        from pytgcalls.types.input_stream import AudioPiped as AudioStreamClass
-    except ImportError:
-        try:
-            from pytgcalls.types import MediaStream as AudioStreamClass
-        except ImportError:
-            pass
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        updated = False
+        # تحويل الهياكل القديمة (القوائم) إلى قواميس لإنفاذ التواريخ إن وجدت
+        if isinstance(data.get("subscribers"), list):
+            data["subscribers"] = {str(uid): (datetime.now() + timedelta(days=365)).isoformat() for uid in data["subscribers"]}
+            updated = True
+        if isinstance(data.get("vip_subscribers"), list):
+            data["vip_subscribers"] = {str(uid): (datetime.now() + timedelta(days=365)).isoformat() for uid in data["vip_subscribers"]}
+            updated = True
 
-API_ID = int(os.environ.get("API_ID", 34733680))
-API_HASH = os.environ.get("API_HASH", "dc47a14a8d693f8afbb73237d2ad7de8")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8879945061:AAEW--k0V6wolMNTZNYl-iWDRG1hFu4nqaU")
+        for key, value in default_db.items():
+            if key not in data:
+                data[key] = value
+                updated = True
+                
+        if updated:
+            save_db(data)
+            
+        return data
+    except Exception:
+        save_db(default_db)
+        return default_db
 
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 7493679412))
-DEV_USERNAME = os.environ.get("DEV_USERNAME", "XX7X6")
+def save_db(db_data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db_data, f, ensure_ascii=False, indent=4)
 
-# السطر المعدل لضمان المعالجة المتسلسلة بدون مشاكل تشغيل
-bot = TelegramClient("bot_session", API_ID, API_HASH, sequential_updates=True)
-assistant_client = None
-pytgcalls_client = None
+db = load_db()
+running_processes = {}
 
-DATA_FILE = "bot_database.json"
+# ==================== الفحص والأذونات والحدود ====================
+def is_dev(user_id):
+    return user_id in db.get("developers", []) or user_id == OWNER_ID
 
-# مصفوفة وقفل لمنع تكرار الأحداث
-processed_events = set()
-processed_lock = asyncio.Lock()
+def is_banned(user_id):
+    return user_id in db.get("banned_users", [])
 
-async def is_duplicate_event(event_key):
-    async with processed_lock:
-        if event_key in processed_events:
-            return True
-        processed_events.add(event_key)
-        if len(processed_events) > 50000:
-            processed_events.clear()
+def check_subscription_expiry(user_id):
+    """التحقق من صلاحية الاشتراك وإزالته إذا انتهى الوقت"""
+    uid_str = str(user_id)
+    now = datetime.now()
+    
+    # فحص الاشتراك العادي
+    if uid_str in db.get("subscribers", {}):
+        exp_date = datetime.fromisoformat(db["subscribers"][uid_str])
+        if now > exp_date:
+            del db["subscribers"][uid_str]
+            save_db(db)
+            return False
+        return True
+
+    # فحص اشتراك VIP
+    if uid_str in db.get("vip_subscribers", {}):
+        exp_date = datetime.fromisoformat(db["vip_subscribers"][uid_str])
+        if now > exp_date:
+            del db["vip_subscribers"][uid_str]
+            save_db(db)
+            return False
+        return True
+
+    return False
+
+def is_vip(user_id):
+    if is_dev(user_id):
+        return True
+    uid_str = str(user_id)
+    if uid_str in db.get("vip_subscribers", {}):
+        return check_subscription_expiry(user_id)
+    return False
+
+def is_authorized(user_id):
+    if is_dev(user_id):
+        return True
+    if db.get("free_mode", False):
+        return True
+    return check_subscription_expiry(user_id)
+
+def get_max_bots(user_id):
+    if is_dev(user_id):
+        return 999  # مطور (غير محدود)
+    if is_vip(user_id):
+        return 3    # مشترك VIP (3 بوتات)
+    if is_authorized(user_id):
+        return 1    # مشترك عادي أو وضع مجاني (1 بوت)
+    return 0
+
+def get_user_files(user_id):
+    prefix = f"{user_id}_"
+    files = []
+    if os.path.exists(HOST_DIR):
+        for f in os.listdir(HOST_DIR):
+            if f.startswith(prefix) and f.endswith(".py"):
+                files.append(f)
+    return files
+
+async def check_force_join(user_id, bot):
+    if not db.get("force_channel"):
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=db["force_channel"], user_id=user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception:
+        return True
+
+# ==================== استخراج وتثبيت المكتبات ====================
+STDLIB_MODULES = {
+    'os', 'sys', 'time', 'math', 'random', 'json', 're', 'asyncio', 'datetime',
+    'subprocess', 'threading', 'typing', 'sqlite3', 'urllib', 'http', 'base64',
+    'hashlib', 'pathlib', 'shutil', 'logging', 'traceback', 'inspect', 'functools'
+}
+
+def extract_requirements(file_path):
+    modules = set()
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
+        for mod in imports:
+            if mod not in STDLIB_MODULES:
+                modules.add(mod)
+    except Exception as e:
+        print(f"خطأ في الفحص: {e}")
+    return list(modules)
+
+async def install_requirements(modules):
+    if not modules:
+        return True
+    try:
+        cmd = ["pip", "install"] + modules
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        await proc.communicate()
+        return proc.returncode == 0
+    except Exception as e:
+        print(f"خطأ في التثبيت: {e}")
         return False
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
-        "developers": [ADMIN_ID],
-        "blocked_users": [],
-        "activated_groups": [],
-        "providers": {},
-        "free_mode": True,
-        "dev_username": DEV_USERNAME,
-        "assistant_session": None
-    }
-
-def save_data(db_data):
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(db_data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"Error saving database: {e}")
-
-db = load_data()
-user_states = {}
-login_clients = {}
-active_sessions = {}
-chat_locks = {}
-user_message_buffers = {}
-
-def get_lock(chat_id):
-    if chat_id not in chat_locks:
-        chat_locks[chat_id] = asyncio.Lock()
-    return chat_locks[chat_id]
-
-def normalize_text(text):
-    if not text:
-        return ""
-    text = re.sub(r'[\s\-_.\u064B-\u0652]', '', str(text))
-    text = text.replace('ة', 'ه').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
-    return text.lower()
-
-def extract_numbers(text):
-    if not text:
-        return ""
-    return "".join(re.findall(r'\d+', str(text)))
-
-def get_dev_link():
-    dev_user = db.get("dev_username", DEV_USERNAME).replace("@", "")
-    return f"https://t.me/{dev_user}"
-
-def get_audio_duration(file_path):
-    try:
-        if file_path.endswith('.wav'):
-            with contextlib.closing(wave.open(file_path, 'r')) as f:
-                frames = f.getnframes()
-                rate = f.getframerate()
-                return frames / float(rate)
-    except Exception:
-        pass
-    return 3.0
-
-async def main_keyboard(user_id):
-    me = await bot.get_me()
+# ==================== لوحات التحكم والأزرار ====================
+def get_main_keyboard(user_id):
     buttons = [
-        [Button.url("➕ إضافة إلى مجموعة", f"https://t.me/{me.username}?startgroup=true")],
-        [Button.inline("📖 دليل الاستخدام", data="user_guide"), Button.url("👨‍💻 المطور", get_dev_link())]
+        [InlineKeyboardButton("📤 إضافة ملف", callback_data="upload_file"),
+         InlineKeyboardButton("📂 ملفاتي", callback_data="my_files")],
+        [InlineKeyboardButton("⚡ تشغيل ملف", callback_data="run_file_menu")],
+        [InlineKeyboardButton("👨‍💻 المطور", url=DEVELOPER_LINK)]
     ]
-    if user_id in db.get("developers", []):
-        buttons.append([Button.inline("⚙️ إعدادات المطورين", data="dev_settings")])
-    return buttons
+    if is_dev(user_id):
+        buttons.append([InlineKeyboardButton("⚙️ إعدادات المطورين", callback_data="dev_settings")])
+    return InlineKeyboardMarkup(buttons)
 
-def dev_keyboard():
-    free_status = "مفعل 🟢" if db.get("free_mode", True) else "معطل 🔴"
-    assistant_status = "مربوط ✅" if db.get("assistant_session") else "غير مربوط ❌"
-    return [
-        [Button.inline("➕ إضافة مطور", data="add_dev_id"), Button.inline("🗑️ حذف مطور", data="remove_dev_menu")],
-        [Button.inline("👤 تغيير يوزر المطور", data="change_dev_user"), Button.inline("🚫 حظر شخص", data="block_user")],
-        [Button.inline(f"📱 ربط الحساب المساعد ({assistant_status})", data="assistant_menu")],
-        [Button.inline(f"🆓 الوضع المجاني: {free_status}", data="toggle_free_mode")],
-        [Button.inline("🎙️ إعدادات المقدمين", data="provider_settings"), Button.inline("📦 تحميل النسخة الحالية", data="take_backup")],
-        [Button.inline("🔙 رجوع", data="main_menu")]
+def get_dev_keyboard():
+    free_status = "مفعل ✅" if db.get("free_mode") else "معطل ❌"
+    buttons = [
+        [InlineKeyboardButton("🚫 حظر / إلغاء حظر", callback_data="toggle_ban"),
+         InlineKeyboardButton("📢 إذاعة", callback_data="broadcast")],
+        [InlineKeyboardButton("📢 الاشتراك الإجباري", callback_data="set_force_channel")],
+        [InlineKeyboardButton(f"🆓 الوضع المجاني ({free_status})", callback_data="toggle_free")],
+        [InlineKeyboardButton("➕ إضافة مشترك عادي (1 بوت)", callback_data="add_sub"),
+         InlineKeyboardButton("⭐ إضافة مشترك VIP (3 بوتات)", callback_data="add_vip")],
+        [InlineKeyboardButton("➕ إضافة مطور", callback_data="add_dev")],
+        [InlineKeyboardButton("📦 جلب نسخة احتياطية", callback_data="get_backup"),
+         InlineKeyboardButton("📥 رفع نسخة احتياطية", callback_data="restore_backup")]
     ]
+    return InlineKeyboardMarkup(buttons)
 
-def remove_dev_keyboard():
-    buttons = []
-    devs = db.get("developers", [])
-    for dev_id in devs:
-        if dev_id != ADMIN_ID:
-            buttons.append([Button.inline(f"❌ حذف: {dev_id}", data=f"delete_dev_{dev_id}")])
-    buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
-    return buttons
-
-def assistant_menu_keyboard():
-    return [
-        [Button.inline("📞 تسجيل الدخول برقم الهاتف", data="login_by_phone")],
-        [Button.inline("🗑️ حذف الحساب المساعد الحالي", data="remove_assistant")],
-        [Button.inline("🔙 رجوع", data="dev_settings")]
-    ]
-
-def provider_settings_keyboard():
-    buttons = [[Button.inline("➕ إضافة مقدم", data="add_provider")]]
-    for p_id, p_data in db.get("providers", {}).items():
-        buttons.append([Button.inline(f"🎙️ {p_data.get('name', p_id)}", data=f"manage_prov_{p_id}")])
-    buttons.append([Button.inline("🔙 رجوع", data="dev_settings")])
-    return buttons
-
-def provider_voices_keyboard(p_id):
-    p_data = db.get("providers", {}).get(p_id, {})
-    num_count = len(p_data.get("voices", {}).get("numbers", []))
-    word_count = len(p_data.get("voices", {}).get("words", []))
-    rand_count = len(p_data.get("voices", {}).get("random", []))
-
-    return [
-        [Button.inline(f"🔢 أرقام ({num_count})", data=f"upload_voice_{p_id}_numbers"),
-         Button.inline(f"📝 كلمات ({word_count})", data=f"upload_voice_{p_id}_words")],
-        [Button.inline(f"🔀 عشوائي ({rand_count})", data=f"upload_voice_{p_id}_random")],
-        [Button.inline("🗑️ حذف فويس معين", data=f"delete_voice_{p_id}")],
-        [Button.inline("❌ حذف المقدم بالكامل", data=f"delete_provider_{p_id}")],
-        [Button.inline("🔙 رجوع لإعدادات المقدمين", data="provider_settings")]
-    ]
-
-def group_providers_keyboard():
-    return [[Button.inline(f"🎙️ {p_data.get('name', p_id)}", data=f"select_prov_{p_id}")] for p_id, p_data in db.get("providers", {}).items()]
-
-def group_types_keyboard(p_id):
-    return [
-        [Button.inline("🔢 قسم الأرقام", data=f"start_play_{p_id}_numbers"), Button.inline("📝 قسم الكلمات", data=f"start_play_{p_id}_words")],
-        [Button.inline("🔀 قسم العشوائي", data=f"start_play_{p_id}_random")],
-        [Button.inline("🔙 إلغاء", data="close_menu")]
-    ]
-
-async def init_assistant_session():
-    global assistant_client, pytgcalls_client
-    session_str = db.get("assistant_session")
-    if session_str:
-        try:
-            assistant_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-            await assistant_client.connect()
-            if await assistant_client.is_user_authorized():
-                pytgcalls_client = PyTgCalls(assistant_client)
-                await pytgcalls_client.start()
-            else:
-                assistant_client = None
-                pytgcalls_client = None
-        except Exception:
-            assistant_client = None
-            pytgcalls_client = None
-
-async def stop_and_leave_call(chat_id):
-    sess = active_sessions.get(chat_id)
-    if sess:
-        if sess.get("timer_task"):
-            sess["timer_task"].cancel()
-        try:
-            if pytgcalls_client:
-                if hasattr(pytgcalls_client, 'leave_group_call'):
-                    await pytgcalls_client.leave_group_call(chat_id)
-                elif hasattr(pytgcalls_client, 'leave_call'):
-                    await pytgcalls_client.leave_call(chat_id)
-        except Exception:
-            pass
-        active_sessions.pop(chat_id, None)
-
-async def auto_skip_timer(chat_id, expected_idx, wait_time):
-    try:
-        await asyncio.sleep(wait_time)
-        async with get_lock(chat_id):
-            sess = active_sessions.get(chat_id)
-            if sess and sess["index"] == expected_idx:
-                await bot.send_message(chat_id, "⚠️ محد جاوب")
-                sess["index"] += 1
-                await play_current_voice(chat_id)
-    except asyncio.CancelledError:
-        pass
-
-async def play_current_voice(chat_id):
-    sess = active_sessions.get(chat_id)
-    if not sess or not pytgcalls_client:
-        return
-
-    if sess.get("timer_task"):
-        sess["timer_task"].cancel()
-        sess["timer_task"] = None
-
-    idx = sess["index"]
-    queue = sess["queue"]
-
-    if idx >= len(queue):
-        await bot.send_message(chat_id, "\nتم انتهائ الفئه")
-        await stop_and_leave_call(chat_id)
-        return
-
-    item = queue[idx]
-    file_path = item.get("file")
-    target_text = item.get("text", "")
-
-    try:
-        if AudioParametersClass:
-            stream = AudioStreamClass(file_path, parameters=AudioParametersClass(bitrate=48000))
-        else:
-            stream = AudioStreamClass(file_path)
-
-        if hasattr(pytgcalls_client, 'change_stream'):
-            await pytgcalls_client.change_stream(chat_id, stream)
-        elif hasattr(pytgcalls_client, 'play'):
-            await pytgcalls_client.play(chat_id, stream)
-        elif hasattr(pytgcalls_client, 'join_group_call'):
-            await pytgcalls_client.join_group_call(chat_id, stream)
-    except Exception as e:
-        print(f"Error streaming: {e}")
-
-    duration = get_audio_duration(file_path)
-    text_len = len(target_text.strip())
-    extra_time = 5.0
-    if text_len > 12:
-        extra_time = 9.0
-    elif text_len > 6:
-        extra_time = 7.0
-
-    total_wait = duration + extra_time
-    sess["timer_task"] = asyncio.create_task(auto_skip_timer(chat_id, idx, total_wait))
-
-@bot.on(events.NewMessage)
-async def global_message_handler(event):
-    if event.out:
-        return
+# ==================== معالجة الأوامر ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     
-    unique_key = f"msg_{event.chat_id}_{event.id}"
-    if await is_duplicate_event(unique_key):
+    if is_banned(user_id):
+        await update.message.reply_text("❌ أنت محظور من استخدام البوت.")
         return
 
-    text = event.raw_text.strip() if event.raw_text else ""
-    user_id = event.sender_id
-    chat_id = event.chat_id
+    if not await check_force_join(user_id, context.bot):
+        await update.message.reply_text(f"⚠️ يرجى الاشتراك في القناة أولاً لاستخدام البوت:\n{db['force_channel']}")
+        return
 
-    if event.is_private:
-        if text.startswith("/start"):
-            if user_id in db.get("blocked_users", []):
-                return await event.reply("❌ أنت محظور.")
-            user_states.pop(user_id, None)
-            sender = await event.get_sender()
-            name = sender.first_name if sender else "المستخدم"
-            return await event.reply(f"أهلاً بك **{name}** في بوت التدريب الصوتي!", buttons=await main_keyboard(user_id))
+    await update.message.reply_text(
+        "أهلاً بك في بوت الاستضافة التلقائي!\nاختر من القائمة أدناه:",
+        reply_markup=get_main_keyboard(user_id)
+    )
 
-        if user_id in db.get("developers", []) and user_id in user_states:
-            state = user_states[user_id]
-            action = state.get("action")
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
 
-            if action == "awaiting_phone_number":
-                phone = text.replace(" ", "").replace("-", "").strip()
-                msg = await event.reply("🔄 جاري طلب الكود...")
-                try:
-                    client = TelegramClient(StringSession(), API_ID, API_HASH)
-                    await client.connect()
-                    sent_code = await client.send_code_request(phone, force_sms=False)
-                    login_clients[user_id] = {
-                        "client": client, "phone": phone, "phone_code_hash": sent_code.phone_code_hash
-                    }
-                    user_states[user_id] = {"action": "awaiting_phone_code"}
-                    return await msg.edit("📲 **أرسل الكود الآن مع إدخال مسافات بين الأرقام:**")
-                except Exception as e:
-                    user_states.pop(user_id, None)
-                    return await msg.edit(f"❌ خطأ: `{e}`")
+    if is_banned(user_id):
+        await query.message.reply_text("❌ أنت محظور من استخدام البوت.")
+        return
 
-            elif action == "awaiting_phone_code":
-                sess_data = login_clients.get(user_id)
-                if not sess_data:
-                    user_states.pop(user_id, None)
-                    return await event.reply("❌ انتهت الجلسة.")
+    data = query.data
 
-                client = sess_data["client"]
-                code = re.sub(r'\D', '', text)
-                msg = await event.reply("🔄 جاري التحقق...")
-                try:
-                    await client.sign_in(phone=sess_data["phone"], code=code, phone_code_hash=sess_data["phone_code_hash"])
-                    db["assistant_session"] = client.session.save()
-                    save_data(db)
-                    login_clients.pop(user_id, None)
-                    user_states.pop(user_id, None)
-                    await init_assistant_session()
-                    return await msg.edit("✅ **تم ربط الحساب المساعد بنجاح!**")
-                except SessionPasswordNeededError:
-                    user_states[user_id] = {"action": "awaiting_2fa"}
-                    return await msg.edit("🔐 أرسل كلمة سر التحقق بخطوتين:")
-                except Exception as e:
-                    return await msg.edit(f"❌ خطأ الكود: `{e}`")
+    # === زر إضافة ملف ===
+    if data == "upload_file":
+        if not is_authorized(user_id):
+            await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
+            return
 
-            elif action == "awaiting_2fa":
-                sess_data = login_clients.get(user_id)
-                if not sess_data:
-                    user_states.pop(user_id, None)
-                    return await event.reply("❌ انتهت الجلسة.")
-                client = sess_data["client"]
-                msg = await event.reply("🔄 جاري التحقق...")
-                try:
-                    await client.sign_in(password=text)
-                    db["assistant_session"] = client.session.save()
-                    save_data(db)
-                    login_clients.pop(user_id, None)
-                    user_states.pop(user_id, None)
-                    await init_assistant_session()
-                    return await msg.edit("✅ **تم تفعيل الحساب المساعد بنجاح!**")
-                except Exception as e:
-                    return await msg.edit(f"❌ كلمة سر خاطئة: `{e}`")
+        max_allowed = get_max_bots(user_id)
+        current_files = get_user_files(user_id)
+        if len(current_files) >= max_allowed:
+            await query.message.reply_text(
+                f"⚠️ لقد وصلت للحد الأقصى المسموح لك بحدود اشتراكك ({max_allowed} بوت).\n"
+                f"قم بحذف ملف من قائمة (📂 ملفاتي) لرفع ملف جديد."
+            )
+            return
 
-            elif action == "awaiting_voice_to_delete":
-                p_id = state.get("provider_id")
-                voices_db = db["providers"].get(p_id, {}).get("voices", {})
-                deleted = 0
-                for cat in ["numbers", "words", "random"]:
-                    if cat in voices_db:
-                        new_list = []
-                        for item in voices_db[cat]:
-                            if item.get("text", "").strip() == text:
-                                deleted += 1
-                                if os.path.exists(item.get("file", "")):
-                                    try: os.remove(item.get("file", ""))
-                                    except Exception: pass
-                            else:
-                                new_list.append(item)
-                        voices_db[cat] = new_list
-                save_data(db)
-                user_states.pop(user_id, None)
-                return await event.reply(f"✅ تم حذف {deleted} فويس.", buttons=provider_voices_keyboard(p_id))
+        context.user_data["awaiting_file"] = True
+        await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم إضافته فوراً إلى قائمة ملفاتك.")
 
-            elif action == "awaiting_voice":
-                if event.voice or event.audio or event.document:
-                    os.makedirs("voices", exist_ok=True)
-                    p_id, v_type = state.get("provider_id"), state.get("voice_type")
-                    path = f"voices/{p_id}_{v_type}_{os.urandom(4).hex()}.ogg"
-                    await event.download_media(file=path)
-                    user_states[user_id] = {"action": "awaiting_voice_text", "provider_id": p_id, "voice_type": v_type, "file_path": path}
-                    return await event.reply("👍 أرسل النص المطابق للصوتية:")
+    # === زر ملفاتي ===
+    elif data == "my_files":
+        files = get_user_files(user_id)
+        if not files:
+            await query.message.reply_text("📂 لا توجد لديك أي ملفات مرفوعة حالياً في قائمة ملفاتك.")
+            return
 
-            elif action == "awaiting_voice_text":
-                p_id, v_type, path = state.get("provider_id"), state.get("voice_type"), state.get("file_path")
-                if p_id not in db["providers"]:
-                    db["providers"][p_id] = {"name": p_id, "voices": {"numbers": [], "words": [], "random": []}}
-                db["providers"][p_id]["voices"][v_type].append({"file": path, "text": text})
-                save_data(db)
-                user_states.pop(user_id, None)
-                return await event.reply(f"✅ تم حفظ الصوتية ونصها: `{text}`", buttons=provider_voices_keyboard(p_id))
+        msg = "📂 **قائمة ملفاتك المخزنة:**\n\n"
+        buttons = []
+        for f in files:
+            clean_name = f.replace(f"{user_id}_", "")
+            full_path = os.path.join(HOST_DIR, f)
+            status = "مشتغل ✅" if (full_path in running_processes and running_processes[full_path].poll() is None) else "متوقف ❌"
+            msg += f"• `{clean_name}` - الحالة: {status}\n"
+            buttons.append([InlineKeyboardButton(f"⚡ تشغيل {clean_name}", callback_data=f"run_{f}"),
+                            InlineKeyboardButton(f"🗑️ حذف", callback_data=f"del_{f}")])
 
-            elif action == "awaiting_provider_id":
-                user_states[user_id] = {"action": "awaiting_provider_name", "provider_id": text}
-                return await event.reply("أرسل اسم المقدم:")
+        buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
+        await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-            elif action == "awaiting_provider_name":
-                p_id = state.get("provider_id")
-                db["providers"][p_id] = {"name": text, "voices": {"numbers": [], "words": [], "random": []}}
-                save_data(db)
-                user_states.pop(user_id, None)
-                return await event.reply("✅ تم الحفظ.", buttons=provider_voices_keyboard(p_id))
+    # === زر تشغيل ملف ===
+    elif data == "run_file_menu":
+        if not is_authorized(user_id):
+            await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
+            return
 
-            elif action == "awaiting_dev_id":
-                try:
-                    new_dev = int(text)
-                    if new_dev not in db["developers"]:
-                        db["developers"].append(new_dev)
-                        save_data(db)
-                        await event.reply("✅ تم إضافته كمطور بنجاح.")
-                    else:
-                        await event.reply("⚠️ المطور موجود بالفعل.")
-                except ValueError:
-                    await event.reply("❌ يرجى إدخال ID صحيح (أرقام فقط).")
-                user_states.pop(user_id, None)
-                return
+        files = get_user_files(user_id)
+        if not files:
+            await query.message.reply_text("⚠️ لا توجد لديك ملفات مخزنة لتشغيلها. قم بإضافة ملف أولاً.")
+            return
 
-            elif action == "awaiting_dev_user":
-                db["dev_username"] = text.replace("@", "")
-                save_data(db)
-                user_states.pop(user_id, None)
-                return await event.reply("✅ تم التحديث.")
+        buttons = []
+        for f in files:
+            clean_name = f.replace(f"{user_id}_", "")
+            buttons.append([InlineKeyboardButton(f"▶️ تشغيل: {clean_name}", callback_data=f"run_{f}")])
 
-            elif action == "awaiting_block_id":
-                try: db["blocked_users"].append(int(text)); save_data(db); await event.reply("🚫 تم الحظر.")
-                except ValueError: pass
-                user_states.pop(user_id, None)
-                return
+        buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
+        await query.message.reply_text("اختر الملف الذي تريد تشغيله من قائمة ملفاتك:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    else:
-        if text == "تفعيل":
-            is_admin = user_id in db.get("developers", [])
-            if not is_admin:
-                try:
-                    part = await bot(GetParticipantRequest(chat_id, user_id))
-                    if isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator)):
-                        is_admin = True
-                except Exception:
-                    is_admin = True
+    # === تشغيل ملف محدد ===
+    elif data.startswith("run_"):
+        file_name = data.replace("run_", "")
+        file_path = os.path.join(HOST_DIR, file_name)
+        
+        if not os.path.exists(file_path):
+            await query.message.reply_text("❌ الملف غير موجود في قائمة ملفاتك.")
+            return
 
-            if not is_admin:
-                return await event.reply("❌ هذا الأمر مخصص لمشرفي المجموعة فقط.")
+        # إيقاف التشغيل القديم إن وجد
+        if file_path in running_processes:
+            try: running_processes[file_path].terminate()
+            except Exception: pass
 
-            if "activated_groups" not in db:
-                db["activated_groups"] = []
+        env = os.environ.copy()
+        env["API_ID"] = str(API_ID)
+        env["API_HASH"] = str(API_HASH)
 
-            if chat_id not in db["activated_groups"]:
-                db["activated_groups"].append(chat_id)
-                save_data(db)
-
-            return await event.reply("✅ **تم تفعيل البوت في هذه المجموعة بنجاح!**\nأرسل الآن: `ابداء التدريب الصوتي`")
-
-        elif text in ["ابداء التدريب الصوتي", "ابدأ التدريب الصوتي"]:
-            if chat_id not in db.get("activated_groups", []):
-                return await event.reply("⚠️ المجموعة غير مفعلة! أرسل كلمة `تفعيل` أولاً.")
-            if not db.get("providers"):
-                return await event.reply("❌ لا يوجد مقدمين مضافين في البوت بعد.")
-            return await event.reply("🎙️ اختر المقدم:", buttons=group_providers_keyboard())
-
-        elif text == "انزل":
-            if chat_id in active_sessions:
-                await stop_and_leave_call(chat_id)
-                return await event.reply("👋 تم إنهاء الجلسة والنزول من الاتصال.")
-            return await event.reply("⚠️ البوت غير متصل في الاتصال الصوتي حالياً.")
-
-        sess = active_sessions.get(chat_id)
-        if sess:
-            async with get_lock(chat_id):
-                curr_sess = active_sessions.get(chat_id)
-                if not curr_sess:
-                    return
-
-                buf_key = f"{chat_id}_{user_id}"
-                current_buffer = user_message_buffers.get(buf_key, "") + " " + text
-                user_message_buffers[buf_key] = current_buffer.strip()
-
-                queue = curr_sess.get("queue", [])
-                idx = curr_sess.get("index", 0)
-
-                if idx < len(queue):
-                    target_text = queue[idx].get("text", "")
-                    
-                    norm_single = normalize_text(user_message_buffers[buf_key])
-                    norm_target = normalize_text(target_text)
-                    digits_single = extract_numbers(user_message_buffers[buf_key])
-                    digits_target = extract_numbers(target_text)
-
-                    matched = False
-                    if norm_target and (norm_target == norm_single or norm_target in norm_single):
-                        matched = True
-                    elif digits_target and digits_single and (digits_target == digits_single or digits_target in digits_single):
-                        matched = True
-
-                    if matched:
-                        curr_sess["index"] += 1
-                        user_message_buffers.pop(buf_key, None)
-                        
-                        if curr_sess.get("timer_task"):
-                            curr_sess["timer_task"].cancel()
-                            curr_sess["timer_task"] = None
-
-                        await bot.send_message(chat_id, "يمك نقطه", reply_to=event.id)
-                        await play_current_voice(chat_id)
-
-async def process_start_play(event, p_id, category):
-    chat_id = event.chat_id
-    if not assistant_client or not pytgcalls_client:
-        return await event.respond("❌ الحساب المساعد غير متصل! أضفه من إعدادات المطور أولاً.")
-
-    raw_voices = db.get("providers", {}).get(p_id, {}).get("voices", {}).get(category, [])
-    if not raw_voices:
-        return await event.respond("⚠️ لا توجد فويسات في هذا القسم!")
-
-    voices_list = list(raw_voices)
-    random.shuffle(voices_list)
-
-    try:
-        await assistant_client.get_entity(chat_id)
-    except Exception:
         try:
-            invite = await bot(ExportChatInviteRequest(chat_id))
-            match = re.search(r'(?:joinchat/|\+)([\w-]+)', invite.link)
-            if match:
-                await assistant_client(ImportChatInviteRequest(match.group(1)))
-        except UserAlreadyParticipantError:
-            pass
+            process = subprocess.Popen(["python", file_path], env=env)
+            running_processes[file_path] = process
+            clean_name = file_name.replace(f"{user_id}_", "")
+            await query.message.reply_text(f"🚀 **تم تشغيل الملف بنجاح:** `{clean_name}`", parse_mode="Markdown")
         except Exception as e:
-            return await event.respond(f"❌ فشل دخول الحساب المساعد: `{e}`")
+            await query.message.reply_text(f"❌ حدث خطأ أثناء التشغيل:\n`{str(e)}`", parse_mode="Markdown")
 
-    try:
-        if chat_id in active_sessions:
-            await stop_and_leave_call(chat_id)
+    # === حذف ملف محدد ===
+    elif data.startswith("del_"):
+        file_name = data.replace("del_", "")
+        file_path = os.path.join(HOST_DIR, file_name)
 
-        active_sessions[chat_id] = {
-            "queue": voices_list, "index": 0,
-            "provider_name": db.get("providers", {}).get(p_id, {}).get("name", p_id),
-            "category_name": category, "timer_task": None
-        }
-        await play_current_voice(chat_id)
-        await event.delete()
-    except Exception as e:
-        await event.respond(f"❌ خطأ التشغيل: `{e}`")
+        if file_path in running_processes:
+            try: running_processes[file_path].terminate()
+            except Exception: pass
 
-@bot.on(events.CallbackQuery)
-async def callback_handler(event):
-    unique_key = f"cb_{event.chat_id}_{event.id}"
-    if await is_duplicate_event(unique_key):
-        return
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            clean_name = file_name.replace(f"{user_id}_", "")
+            await query.message.reply_text(f"🗑️ تم حذف الملف `{clean_name}` من قائمة ملفاتك بنجاح.", parse_mode="Markdown")
+        else:
+            await query.message.reply_text("❌ الملف غير موجود.")
 
-    try: await event.answer()
-    except Exception: pass
+    elif data == "back_main":
+        await query.message.reply_text("القائمة الرئيسية:", reply_markup=get_main_keyboard(user_id))
 
-    data = event.data.decode("utf-8")
-    user_id = event.sender_id
+    # === إعدادات المطورين ===
+    elif data == "dev_settings":
+        if not is_dev(user_id):
+            await query.message.reply_text("❌ هذا الخيار مخصص للمطورين فقط.")
+            return
+        await query.message.reply_text("⚙️ **لوحة إعدادات المطورين:**", reply_markup=get_dev_keyboard(), parse_mode="Markdown")
 
-    try:
-        if data == "close_menu":
-            await event.delete()
-        elif data == "main_menu":
-            await event.edit("القائمة الرئيسية:", buttons=await main_keyboard(user_id))
-        elif data == "user_guide":
-            await event.edit("📖 **دليل الاستخدام:**\n1. أضف البوت للمجموعة.\n2. اكتب `تفعيل`.\n3. اكتب `ابداء التدريب الصوتي`.", buttons=[[Button.inline("🔙 رجوع", data="main_menu")]])
-        elif data == "dev_settings" and user_id in db.get("developers", []):
-            await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
-        elif data == "remove_dev_menu" and user_id in db.get("developers", []):
-            await event.edit("🗑️ اختر المطور المراد حذفه من القائمة:", buttons=remove_dev_keyboard())
-        elif data.startswith("delete_dev_") and user_id in db.get("developers", []):
-            target_dev = int(data.split("_")[2])
-            if target_dev in db["developers"]:
-                db["developers"].remove(target_dev)
-                save_data(db)
-            await event.edit("🗑️ اختر المطور المراد حذفه من القائمة:", buttons=remove_dev_keyboard())
-        elif data == "assistant_menu" and user_id in db.get("developers", []):
-            await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
-        elif data == "login_by_phone" and user_id in db.get("developers", []):
-            user_states[user_id] = {"action": "awaiting_phone_number"}
-            await event.edit("📞 أرسل رقم الهاتف المساعد بالصيغة الدولية:")
-        elif data == "remove_assistant" and user_id in db.get("developers", []):
-            db["assistant_session"] = None
-            save_data(db)
-            await event.edit("📱 ربط الحساب المساعد:", buttons=assistant_menu_keyboard())
-        elif data == "add_dev_id" and user_id in db.get("developers", []):
-            user_states[user_id] = {"action": "awaiting_dev_id"}
-            await event.edit("📥 أرسل ID المطور الجديد:")
-        elif data == "change_dev_user" and user_id in db.get("developers", []):
-            user_states[user_id] = {"action": "awaiting_dev_user"}
-            await event.edit("👤 أرسل اليوزر الجديد:")
-        elif data == "block_user" and user_id in db.get("developers", []):
-            user_states[user_id] = {"action": "awaiting_block_id"}
-            await event.edit("🚫 أرسل ID المراد حظره:")
-        elif data == "toggle_free_mode" and user_id in db.get("developers", []):
-            db["free_mode"] = not db.get("free_mode", True)
-            save_data(db)
-            await event.edit("🛠️ إعدادات المطورين:", buttons=dev_keyboard())
-        elif data == "take_backup" and user_id in db.get("developers", []):
-            save_data(db)
-            if os.path.exists(DATA_FILE):
-                await bot.send_file(user_id, DATA_FILE, caption="📦 النسخة الاحتياطية الحالية.")
-        elif data == "provider_settings" and user_id in db.get("developers", []):
-            await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
-        elif data == "add_provider" and user_id in db.get("developers", []):
-            user_states[user_id] = {"action": "awaiting_provider_id"}
-            await event.edit("📥 أرسل معرف (ID) المقدم:")
-        elif data.startswith("manage_prov_") and user_id in db.get("developers", []):
-            p_id = data.split("_")[2]
-            await event.edit("⚙️ اختر النوع:", buttons=provider_voices_keyboard(p_id))
-        elif data.startswith("delete_provider_") and user_id in db.get("developers", []):
-            p_id = data.split("_")[2]
-            if p_id in db["providers"]:
-                del db["providers"][p_id]
-                save_data(db)
-            await event.edit("🎙️ إعدادات المقدمين:", buttons=provider_settings_keyboard())
-        elif data.startswith("delete_voice_") and user_id in db.get("developers", []):
-            p_id = data.split("_")[2]
-            user_states[user_id] = {"action": "awaiting_voice_to_delete", "provider_id": p_id}
-            await event.edit("🗑️ أرسل نص الفويس المراد حذفه:")
-        elif data.startswith("upload_voice_") and user_id in db.get("developers", []):
-            parts = data.split("_")
-            user_states[user_id] = {"action": "awaiting_voice", "provider_id": parts[2], "voice_type": parts[3]}
-            await event.edit(f"🎙️ أرسل الملف الصوتي لقسم ({parts[3]}):")
-        elif data.startswith("select_prov_"):
-            p_id = data.split("_")[2]
-            await event.edit(f"🎙️ المقدم المحدد: {db['providers'].get(p_id, {}).get('name', p_id)}", buttons=group_types_keyboard(p_id))
-        elif data.startswith("start_play_"):
-            parts = data.split("_")
-            p_id, category = parts[2], parts[3]
-            await event.edit("🎙️ جاري دخول الحساب المساعد للاتصال...")
-            await process_start_play(event, p_id, category)
+    elif data == "toggle_free":
+        if not is_dev(user_id): return
+        db["free_mode"] = not db.get("free_mode", False)
+        save_db(db)
+        await query.message.reply_text(f"تم تغيير الوضع المجاني إلى: {db['free_mode']}")
 
-    except MessageNotModifiedError:
-        pass
+    elif data == "get_backup":
+        if not is_dev(user_id): return
+        await send_backup(context.bot, user_id)
 
-async def handle_ping(request):
-    return web.Response(text="Bot is active")
+    elif data == "toggle_ban":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "ban"
+        await query.message.reply_text("أرسل الـ ID للشخص المراد حظره أو إلغاء حظره:")
 
-async def start_dummy_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/health", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+    elif data == "add_sub":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "add_sub_step1"
+        await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك عادي (1 بوت):")
 
-async def main():
-    await start_dummy_server()
+    elif data == "add_vip":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "add_vip_step1"
+        await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك VIP (3 بوتات):")
+
+    elif data == "add_dev":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "add_dev"
+        await query.message.reply_text("أرسل الـ ID للشخص المراد رفعه مطور:")
+
+    elif data == "broadcast":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "broadcast"
+        await query.message.reply_text("أرسل النص المراد إرساله للإذاعة لجميع المشتركين:")
+
+    elif data == "set_force_channel":
+        if not is_dev(user_id): return
+        context.user_data["action"] = "set_force_channel"
+        await query.message.reply_text("أرسل معرف القناة مع الـ @ (مثال: `@MyChannel`) أو اتركها فارغة للإلغاء:")
+
+    elif data == "restore_backup":
+        if not is_dev(user_id): return
+        context.user_data["awaiting_backup_file"] = True
+        await query.message.reply_text("أرسل الآن ملف النسخة الاحتياطية (`.json`).")
+
+# ==================== استقبال الرسائل الإدارية وتحديد الأوقات ====================
+async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_banned(user_id): return
+
+    action = context.user_data.get("action")
+    text = update.message.text.strip()
+
+    if action == "ban":
+        try:
+            target_id = int(text)
+            banned_list = db.setdefault("banned_users", [])
+            if target_id in banned_list:
+                banned_list.remove(target_id)
+                await update.message.reply_text(f"✅ تم إلغاء حظر المستخدم `{target_id}`.")
+            else:
+                banned_list.append(target_id)
+                await update.message.reply_text(f"🚫 تم حظر المستخدم `{target_id}`.")
+            save_db(db)
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال ID صحيح.")
+        context.user_data["action"] = None
+
+    # إضافة مشترك عادي - الخطوة 1: استلام الـ ID
+    elif action == "add_sub_step1":
+        try:
+            context.user_data["temp_target_id"] = int(text)
+            context.user_data["action"] = "add_sub_step2"
+            await update.message.reply_text("أدخل **مدة الاشتراك بالأيام** لهذا المشترك (مثلاً: `30`):", parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال ID صحيح (أرقام فقط).")
+
+    # إضافة مشترك عادي - الخطوة 2: تحديد وقت وتاريخ الانتهاء
+    elif action == "add_sub_step2":
+        try:
+            days = int(text)
+            target_id = context.user_data.get("temp_target_id")
+            expire_date = datetime.now() + timedelta(days=days)
+            
+            sub_dict = db.setdefault("subscribers", {})
+            sub_dict[str(target_id)] = expire_date.isoformat()
+            save_db(db)
+
+            expire_str = expire_date.strftime("%Y-%m-%d %H:%M")
+            await update.message.reply_text(
+                f"✅ تم إضافة المشترك العادي `{target_id}` بنجاح!\n"
+                f"⏱️ المدة: {days} يوم\n"
+                f"📅 ينتهي بتاريخ: `{expire_str}`",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال عدد أيام صحيح (أرقام فقط).")
+        context.user_data["action"] = None
+
+    # إضافة مشترك VIP - الخطوة 1: استلام الـ ID
+    elif action == "add_vip_step1":
+        try:
+            context.user_data["temp_target_id"] = int(text)
+            context.user_data["action"] = "add_vip_step2"
+            await update.message.reply_text("أدخل **مدة الاشتراك بالأيام** للمشترك الـ VIP (مثلاً: `30`):", parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال ID صحيح (أرقام فقط).")
+
+    # إضافة مشترك VIP - الخطوة 2: تحديد وقت وتاريخ الانتهاء
+    elif action == "add_vip_step2":
+        try:
+            days = int(text)
+            target_id = context.user_data.get("temp_target_id")
+            expire_date = datetime.now() + timedelta(days=days)
+            
+            vip_dict = db.setdefault("vip_subscribers", {})
+            vip_dict[str(target_id)] = expire_date.isoformat()
+            save_db(db)
+
+            expire_str = expire_date.strftime("%Y-%m-%d %H:%M")
+            await update.message.reply_text(
+                f"⭐ تم إضافة المشترك الـ VIP `{target_id}` بنجاح!\n"
+                f"⏱️ المدة: {days} يوم\n"
+                f"📅 ينتهي بتاريخ: `{expire_str}`",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال عدد أيام صحيح (أرقام فقط).")
+        context.user_data["action"] = None
+
+    elif action == "add_dev":
+        try:
+            target_id = int(text)
+            dev_list = db.setdefault("developers", [])
+            if target_id not in dev_list:
+                dev_list.append(target_id)
+                save_db(db)
+                await update.message.reply_text(f"✅ تم إضافة المطور `{target_id}` بنجاح.")
+            else:
+                await update.message.reply_text("⚠️ المستخدم مطور بالفعل.")
+        except ValueError:
+            await update.message.reply_text("❌ يرجى إرسال ID صحيح.")
+        context.user_data["action"] = None
+
+    elif action == "broadcast":
+        context.user_data["action"] = None
+        count = 0
+        all_users = set(list(db.get("subscribers", {}).keys()) + list(db.get("vip_subscribers", {}).keys()))
+        for sub in all_users:
+            try:
+                await context.bot.send_message(chat_id=int(sub), text=f"📢 **إذاعة من إدارة البوت:**\n\n{text}", parse_mode="Markdown")
+                count += 1
+            except Exception:
+                pass
+        await update.message.reply_text(f"✅ تم إرسال الإذاعة إلى {count} مشترك.")
+
+    elif action == "set_force_channel":
+        db["force_channel"] = text
+        save_db(db)
+        await update.message.reply_text(f"✅ تم تعيين قناة الاشتراك الإجباري إلى: {db['force_channel']}")
+        context.user_data["action"] = None
+
+# ==================== استقبال وتشغيل الملفات ====================
+async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_banned(user_id): return
+
+    doc = update.message.document
+    file_name = doc.file_name
+
+    # استعادة نسخة احتياطية
+    if context.user_data.get("awaiting_backup_file"):
+        if is_dev(user_id) and file_name.endswith('.json'):
+            file = await context.bot.get_file(doc.file_id)
+            await file.download_to_drive(DB_FILE)
+            global db
+            db = load_db()
+            await update.message.reply_text("✅ تم استعادة قاعدة البيانات والنسخة الاحتياطية بنجاح!")
+            context.user_data["awaiting_backup_file"] = False
+            return
+
+    # رفع ملف وإضافته إلى "قائمة ملفاتي"
+    if context.user_data.get("awaiting_file"):
+        if not is_authorized(user_id):
+            await update.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
+            context.user_data["awaiting_file"] = False
+            return
+
+        if not file_name.endswith('.py'):
+            await update.message.reply_text("❌ يرجى إرسال ملف بصيغة Python (`.py`) فقط.")
+            return
+
+        status_msg = await update.message.reply_text("⏳ جاري حفظ الملف في قائمة ملفاتك وفحص المكتبات المطلوبة...")
+
+        file_path = os.path.join(HOST_DIR, f"{user_id}_{file_name}")
+        file = await context.bot.get_file(doc.file_id)
+        await file.download_to_drive(file_path)
+
+        # تثبيت المكتبات تلقائياً
+        modules = extract_requirements(file_path)
+        if modules:
+            await status_msg.edit_text(f"📦 جاري تثبيت المكتبات المطلوبة تلقائياً:\n`{', '.join(modules)}`...")
+            await install_requirements(modules)
+
+        buttons = [
+            [InlineKeyboardButton(f"⚡ تشغيل الملف الآن", callback_data=f"run_{user_id}_{file_name}")],
+            [InlineKeyboardButton("📂 الذهاب إلى قائمة ملفاتي", callback_data="my_files")]
+        ]
+
+        await status_msg.edit_text(
+            f"✅ **تم إضافة الملف بنجاح إلى قائمة ملفاتك وتثبيت كافة المكتبات!**\n📄 **اسم الملف:** `{file_name}`\n\nيمكنك تشغيله الآن أو تشغيله لاحقاً من قائمة ملفاتك عبر زر (⚡ تشغيل ملف).",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
+        )
+
+        context.user_data["awaiting_file"] = False
+
+# ==================== النسخ الاحتياطي التلقائي ====================
+async def send_backup(bot, target_id=OWNER_ID):
+    zip_path = "hosted_bots_backup.zip"
+    subprocess.run(["zip", "-r", zip_path, HOST_DIR]) if os.path.exists(HOST_DIR) else None
+
+    if os.path.exists(DB_FILE):
+        try:
+            await bot.send_document(
+                chat_id=target_id,
+                document=open(DB_FILE, "rb"),
+                caption=f"📦 **نسخة احتياطية لقاعدة البيانات**\n📅 التاريخ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
+                parse_mode="Markdown"
+            )
+        except Exception: pass
+    
+    if os.path.exists(zip_path):
+        try:
+            await bot.send_document(
+                chat_id=target_id,
+                document=open(zip_path, "rb"),
+                caption="📂 **نسخة احتياطية للملفات المرفوعة.**"
+            )
+        except Exception: pass
+        os.remove(zip_path)
+
+async def auto_backup_loop(app):
     while True:
-        try:
-            await bot.start(bot_token=BOT_TOKEN)
-            await init_assistant_session()
-            print("🚀 Bot started running...")
-            await bot.run_until_disconnected()
-            break
-        except FloodWaitError as e:
-            print(f"⚠️ Telegram FloodWait: Sleeping for {e.seconds} seconds...")
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            print(f"❌ Startup Error: {e}")
-            await asyncio.sleep(10)
+        await asyncio.sleep(5 * 3600)
+        await send_backup(app.bot, OWNER_ID)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def post_init(app: Application):
+    asyncio.create_task(auto_backup_loop(app))
+
+# ==================== التشغيل الرئيسي ====================
+def main():
+    request_custom = HTTPXRequest(
+        connect_timeout=60.0,
+        read_timeout=60.0
+    )
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request_custom)
+        .post_init(post_init)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_documents))
+
+    print("البوت يعمل الآن...")
+    app.run_polling(bootstrap_retries=-1)
+
+if __name__ == '__main__':
+    main()
