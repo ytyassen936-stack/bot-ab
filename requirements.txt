@@ -1,5 +1,4 @@
-telethon
-py-tgcalls
-tgcrypto
-flask
-waitress
+python-telegram-bot
+httpx
+cryptography
+zipfile36
