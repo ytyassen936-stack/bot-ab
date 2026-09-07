@@ -11,6 +11,8 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from telegram.request import HTTPXRequest
+import httpx
+from aiohttp import web
 
 # ==================== الإعدادات الأساسية ====================
 BOT_TOKEN = "8942894582:AAGpIB2ZPoFGUm0VFMcJApZ1hrWNl9Ry9mU"
@@ -31,8 +33,8 @@ def load_db():
     default_db = {
         "developers": [OWNER_ID],
         "banned_users": [],
-        "subscribers": {},    # {"user_id": "expire_date_iso"}
-        "vip_subscribers": {},# {"user_id": "expire_date_iso"}
+        "subscribers": {},
+        "vip_subscribers": {},
         "free_mode": False,
         "force_channel": ""
     }
@@ -168,7 +170,7 @@ async def install_requirements(modules):
     if not modules:
         return True
     try:
-        cmd = ["pip", "install"] + modules
+        cmd = ["pip", "install", "--no-cache-dir"] + modules
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         await proc.communicate()
         return proc.returncode == 0
@@ -204,7 +206,7 @@ def get_dev_keyboard():
     ]
     return InlineKeyboardMarkup(buttons)
 
-# ==================== معالجة الأوامر ====================
+# ==================== معالجة الأوامر والأزرار ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -217,7 +219,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "أهلاً بك في بوت الاستضافة التلقائي!\nاختر من القائمة أدناه:",
+        "أهلاً بك في بوت الاستضافة التلقائي السريع!\nاختر من القائمة أدناه:",
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -295,12 +297,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if file_path in running_processes:
-            try: running_processes[file_path].terminate()
-            except Exception: pass
+            try:
+                running_processes[file_path].terminate()
+                running_processes[file_path].wait(timeout=2)
+            except Exception:
+                pass
 
         env = os.environ.copy()
         env["API_ID"] = str(API_ID)
         env["API_HASH"] = str(API_HASH)
+        env["PYTHONUNBUFFERED"] = "1"
 
         try:
             process = subprocess.Popen(["python", file_path], env=env)
@@ -315,13 +321,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = os.path.join(HOST_DIR, file_name)
 
         if file_path in running_processes:
-            try: running_processes[file_path].terminate()
-            except Exception: pass
+            try:
+                running_processes[file_path].terminate()
+            except Exception:
+                pass
 
         if os.path.exists(file_path):
             os.remove(file_path)
             clean_name = file_name.replace(f"{user_id}_", "")
-            await query.message.reply_text(f"🗑️ تم حذف الملف `{clean_name}` من قائمة ملفاتك بنجاح.", parse_mode="Markdown")
+            await query.message.reply_text(f"🗑️ تم حذف الملف `{clean_name}` بنجاح.", parse_mode="Markdown")
         else:
             await query.message.reply_text("❌ الملف غير موجود.")
 
@@ -384,7 +392,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_backup_file"] = True
         await query.message.reply_text("أرسل الآن ملف النسخة الاحتياطية (`.json`).")
 
-# ==================== استقبال الرسائل الإدارية ====================
+# ==================== استقبال الرسائل والملفات ====================
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_banned(user_id): return
@@ -514,7 +522,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تعيين قناة الاشتراك الإجباري إلى: {db['force_channel']}")
         context.user_data["action"] = None
 
-# ==================== استقبال وتشغيل الملفات ====================
 async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_banned(user_id): return
@@ -542,7 +549,7 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ يرجى إرسال ملف بصيغة Python (`.py`) فقط.")
             return
 
-        status_msg = await update.message.reply_text("⏳ جاري حفظ الملف في قائمة ملفاتك وفحص المكتبات المطلوبة...")
+        status_msg = await update.message.reply_text("⏳ جاري حفظ الملف وفحص المكتبات المطلوبة...")
 
         file_path = os.path.join(HOST_DIR, f"{user_id}_{file_name}")
         file = await context.bot.get_file(doc.file_id)
@@ -559,19 +566,41 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         await status_msg.edit_text(
-            f"✅ **تم إضافة الملف بنجاح إلى قائمة ملفاتك وتثبيت كافة المكتبات!**\n📄 **اسم الملف:** `{file_name}`\n\nيمكنك تشغيله الآن أو تشغيله لاحقاً من قائمة ملفاتك عبر زر (⚡ تشغيل ملف).",
+            f"✅ **تم إضافة الملف بنجاح إلى قائمة ملفاتك وتثبيت كافة المكتبات!**\n📄 **اسم الملف:** `{file_name}`",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="Markdown"
         )
 
         context.user_data["awaiting_file"] = False
 
-# ==================== النسخ الاحتياطي التلقائي الشامل ====================
+# ==================== سيرفر WEB ومجابهة الخمول ====================
+async def handle_ping(request):
+    return web.Response(text="Bot is Running Online 24/7!")
+
+async def start_web_server():
+    """فتح منفذ HTTP لإعلام Render أن الخدمة تعمل كـ Web Service"""
+    app_web = web.Application()
+    app_web.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"تم فتح المنفذ بنجاح على Port: {port}")
+
+async def keep_alive_loop():
+    """تمنع إيقاف الخادم بدون انقطاع"""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            await asyncio.sleep(240)
+            try:
+                await client.get("https://api.telegram.org")
+            except Exception:
+                pass
+
 async def send_backup(bot, target_id=OWNER_ID):
     zip_path = "full_bot_backup.zip"
-    
     try:
-        # إنشاء ملف zip شامل يحتوي على البوتات المرفوعة، قاعدة البيانات، وسكربت البوت الأساسي
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             if os.path.exists(HOST_DIR):
                 for root, dirs, files in os.walk(HOST_DIR):
@@ -583,7 +612,6 @@ async def send_backup(bot, target_id=OWNER_ID):
             if os.path.exists(DB_FILE):
                 zipf.write(DB_FILE, os.path.basename(DB_FILE))
                 
-            # إضافة ملف البوت الرئيسي
             main_script = os.path.basename(__file__)
             if os.path.exists(main_script):
                 zipf.write(main_script, main_script)
@@ -592,11 +620,7 @@ async def send_backup(bot, target_id=OWNER_ID):
             await bot.send_document(
                 chat_id=target_id,
                 document=open(zip_path, "rb"),
-                caption=f"📦 **نسخة احتياطية شاملة للبوت بالكامل**\n\n"
-                        f"• تحتوي على قاعدة البيانات\n"
-                        f"• جميع ملفات البوتات المرفوعة للمستخدمين\n"
-                        f"• كود البوت الرئيسي\n\n"
-                        f"📅 التاريخ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
+                caption=f"📦 **نسخة احتياطية شاملة للبوت**\n📅 التاريخ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
                 parse_mode="Markdown"
             )
             os.remove(zip_path)
@@ -609,13 +633,17 @@ async def auto_backup_loop(app):
         await send_backup(app.bot, OWNER_ID)
 
 async def post_init(app: Application):
+    asyncio.create_task(start_web_server())
+    asyncio.create_task(keep_alive_loop())
     asyncio.create_task(auto_backup_loop(app))
 
 # ==================== التشغيل الرئيسي ====================
 def main():
     request_custom = HTTPXRequest(
-        connect_timeout=60.0,
-        read_timeout=60.0
+        connection_pool_size=30,
+        connect_timeout=15.0,
+        read_timeout=15.0,
+        write_timeout=15.0
     )
 
     app = (
@@ -631,7 +659,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_documents))
 
-    print("البوت يعمل الآن...")
+    print("البوت يعمل بأقصى سرعة وقوة...")
     app.run_polling(bootstrap_retries=-1)
 
 if __name__ == '__main__':
