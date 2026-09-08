@@ -3,3 +3,4 @@ httpx
 aiohttp
 cryptography
 zipfile36
+pyTelegramBotAPI
