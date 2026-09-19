@@ -578,7 +578,6 @@ async def handle_ping(request):
     return web.Response(text="Bot is Running Online 24/7!")
 
 async def start_web_server():
-    """فتح منفذ HTTP لإعلام Render أن الخدمة تعمل كـ Web Service"""
     app_web = web.Application()
     app_web.router.add_get("/", handle_ping)
     runner = web.AppRunner(app_web)
@@ -589,7 +588,6 @@ async def start_web_server():
     print(f"تم فتح المنفذ بنجاح على Port: {port}")
 
 async def keep_alive_loop():
-    """تمنع إيقاف الخادم بدون انقطاع"""
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
             await asyncio.sleep(240)
@@ -655,7 +653,10 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # إصلاح الأزرار بواسطة النمط المفتوح (Pattern) ليعالج جميع الضغطات بدون استثناء
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=".*"))
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_documents))
 
@@ -664,4 +665,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
