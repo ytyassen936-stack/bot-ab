@@ -16,7 +16,7 @@ from aiohttp import web
 
 # ==================== الإعدادات الأساسية ====================
 BOT_TOKEN = "8738113127:AAFWxlU4O_PUS_18w80uibe6RdoP6S80A_E"
-OWNER_ID = 7493679412  # ضع ايديك (ID) هنا كمالك أساسي للبوت
+OWNER_ID = 7493679412  # ضع ايديك هنا كمالك أساسي للبوت
 DEVELOPER_LINK = "https://t.me/xx7x6"
 
 DB_FILE = "bot_database.json"
@@ -143,7 +143,7 @@ async def check_force_join(user_id, bot):
     except Exception:
         return True
 
-# ==================== استخراج وتثبيت المكتبات ====================
+# ==================== فحص وتثبيت المكتبات تلقائياً ====================
 STDLIB_MODULES = {
     'os', 'sys', 'time', 'math', 'random', 'json', 're', 'asyncio', 'datetime',
     'subprocess', 'threading', 'typing', 'sqlite3', 'urllib', 'http', 'base64',
@@ -155,29 +155,30 @@ def extract_requirements(file_path):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
+        # استخراج المكتبات المكتوبة عبر import أو from
         imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
         for mod in imports:
             if mod not in STDLIB_MODULES:
                 modules.add(mod)
     except Exception as e:
-        print(f"خطأ في الفحص: {e}")
+        print(f"خطأ في استخراج المكتبات: {e}")
     return list(modules)
 
 async def install_requirements(modules):
     if not modules:
         return True
     try:
+        # تثبيت المكتبات تلقائياً عبر pip
         cmd = ["pip", "install", "--user", "--no-cache-dir"] + modules
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         await proc.communicate()
         return proc.returncode == 0
     except Exception as e:
-        print(f"خطأ في التثبيت: {e}")
+        print(f"خطأ في تثبيت المكتبات: {e}")
         return False
 
-# ==================== مراقبة أخطاء الملفات المرفوعة وإرسالها ====================
+# ==================== مراقبة الأخطاء وإرسالها تلقائياً ====================
 async def monitor_process(file_path, owner_id, bot):
-    """مراقبة العملية وإرسال تفاصيل الخطأ مباشرة إلى المالك إذا توقف البوت"""
     await asyncio.sleep(2)
     process = running_processes.get(file_path)
     if not process:
@@ -194,10 +195,10 @@ async def monitor_process(file_path, owner_id, bot):
     
     if process.returncode != 0:
         error_msg = (
-            f"⚠️ **توقف الملف المرفوع عن العمل!**\n\n"
+            f"⚠️ **توقف الملف المرفوع عن العمل بوجود خلل!**\n\n"
             f"📄 **اسم الملف:** `{clean_name}`\n"
             f"❌ **رمز الخروج:** `{process.returncode}`\n\n"
-            f"📜 **الخطأ الحاصل:**\n```{stderr_output[-1000:] if stderr_output else 'لا توجد تفاصيل خطأ مسجلة'}```"
+            f"📜 **تفاصيل الخطأ:**\n```{stderr_output[-1000:] if stderr_output else 'خطأ غير معروف'}```"
         )
         try:
             await bot.send_message(chat_id=owner_id, text=error_msg, parse_mode="Markdown")
@@ -249,7 +250,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(user_id)
     )
 
-# ==================== معالجة الأزرار ====================
+# ==================== معالجة الأزرار الشاملة ====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -276,7 +277,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         context.user_data["awaiting_file"] = True
-        await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم إضافته فوراً إلى قائمة ملفاتك.")
+        await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم إضافته وفحص مكتباته تلقائياً.")
 
     elif data == "my_files":
         files = get_user_files(user_id)
@@ -587,6 +588,7 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(doc.file_id)
         await file.download_to_drive(file_path)
 
+        # فحص وتثبيت المكتبات تلقائياً هنا
         modules = extract_requirements(file_path)
         if modules:
             await status_msg.edit_text(f"📦 جاري تثبيت المكتبات المطلوبة تلقائياً:\n`{', '.join(modules)}`...")
@@ -598,7 +600,7 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         await status_msg.edit_text(
-            f"✅ **تم إضافة الملف بنجاح إلى قائمة ملفاتك وتثبيت كافة المكتبات!**\n📄 **اسم الملف:** `{file_name}`",
+            f"✅ **تم إضافة الملف بنجاح وتثبيت مكتباته التابعة!**\n📄 **اسم الملف:** `{file_name}`",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="Markdown"
         )
@@ -617,7 +619,6 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"تم فتح المنفذ بنجاح على Port: {port}")
 
 async def keep_alive_loop():
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -685,7 +686,10 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # تم استخدام pattern لتفعيل كافة الأزرار بدون استثناء
+    app.add_handler(CallbackQueryHandler(button_handler, pattern=r".*"))
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_documents))
 
