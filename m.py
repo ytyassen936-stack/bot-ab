@@ -15,7 +15,7 @@ import httpx
 from aiohttp import web
 
 # ==================== الإعدادات الأساسية ====================
-BOT_TOKEN = "8738113127:AAFWxlU4O_PUS_18w80uibe6RdoP6S80A_E"
+BOT_TOKEN = "8711390775:AAFqRlwXZVauWdBpd4RHkpVZtGH4eXQgD2A"
 OWNER_ID = 7493679412  # ضع ايديك هنا كمالك أساسي للبوت
 DEVELOPER_LINK = "https://t.me/xx7x6"
 
