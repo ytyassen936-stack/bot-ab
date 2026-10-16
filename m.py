@@ -15,12 +15,9 @@ import httpx
 from aiohttp import web
 
 # ==================== الإعدادات الأساسية ====================
-BOT_TOKEN = "8651327541:AAHBdpy9TARelOWT55Ec2I8Wze4f1OKAfkU"
+BOT_TOKEN = "8758741369:AAFghyYnFHb2Sigqhr5hQDyYH5BF0zNNDVQ"
 OWNER_ID = 7493679412  # ضع ايديك (ID) هنا كمالك أساسي للبوت
-DEVELOPER_LINK = "https://t.me/XX7X6"  # رابط حسابك المباشر
-
-API_ID = 12345678  # الـ API ID
-API_HASH = "ضع_الـ_API_HASH_الخاص_بك_هنا"  # الـ API HASH
+DEVELOPER_LINK = "https://t.me/xx7x6"
 
 DB_FILE = "bot_database.json"
 HOST_DIR = "./hosted_bots"
@@ -170,13 +167,42 @@ async def install_requirements(modules):
     if not modules:
         return True
     try:
-        cmd = ["pip", "install", "--no-cache-dir"] + modules
+        cmd = ["pip", "install", "--user", "--no-cache-dir"] + modules
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         await proc.communicate()
         return proc.returncode == 0
     except Exception as e:
         print(f"خطأ في التثبيت: {e}")
         return False
+
+# ==================== مراقبة أخطاء الملفات المرفوعة وإرسالها ====================
+async def monitor_process(file_path, owner_id, bot):
+    """مراقبة العملية وإرسال تفاصيل الخطأ مباشرة إلى المالك إذا توقف البوت"""
+    await asyncio.sleep(2)
+    process = running_processes.get(file_path)
+    if not process:
+        return
+
+    while process.poll() is None:
+        await asyncio.sleep(1)
+
+    stderr_output = ""
+    if process.stderr:
+        stderr_output = process.stderr.read()
+
+    clean_name = os.path.basename(file_path).replace(f"{owner_id}_", "")
+    
+    if process.returncode != 0:
+        error_msg = (
+            f"⚠️ **توقف الملف المرفوع عن العمل!**\n\n"
+            f"📄 **اسم الملف:** `{clean_name}`\n"
+            f"❌ **رمز الخروج:** `{process.returncode}`\n\n"
+            f"📜 **الخطأ الحاصل:**\n```{stderr_output[-1000:] if stderr_output else 'لا توجد تفاصيل خطأ مسجلة'}```"
+        )
+        try:
+            await bot.send_message(chat_id=owner_id, text=error_msg, parse_mode="Markdown")
+        except Exception:
+            pass
 
 # ==================== لوحات التحكم والأزرار ====================
 def get_main_keyboard(user_id):
@@ -206,7 +232,7 @@ def get_dev_keyboard():
     ]
     return InlineKeyboardMarkup(buttons)
 
-# ==================== معالجة الأوامر والأزرار ====================
+# ==================== معالجة الأوامر ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -223,6 +249,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(user_id)
     )
 
+# ==================== معالجة الأزرار ====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -304,13 +331,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         env = os.environ.copy()
-        env["API_ID"] = str(API_ID)
-        env["API_HASH"] = str(API_HASH)
         env["PYTHONUNBUFFERED"] = "1"
 
         try:
-            process = subprocess.Popen(["python", file_path], env=env)
+            process = subprocess.Popen(
+                ["python3", file_path],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
             running_processes[file_path] = process
+            asyncio.create_task(monitor_process(file_path, user_id, context.bot))
+
             clean_name = file_name.replace(f"{user_id}_", "")
             await query.message.reply_text(f"🚀 **تم تشغيل الملف بنجاح:** `{clean_name}`", parse_mode="Markdown")
         except Exception as e:
@@ -653,10 +685,7 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-    
-    # إصلاح الأزرار بواسطة النمط المفتوح (Pattern) ليعالج جميع الضغطات بدون استثناء
-    app.add_handler(CallbackQueryHandler(button_handler, pattern=".*"))
-    
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_documents))
 
