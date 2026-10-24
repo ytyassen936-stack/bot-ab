@@ -21,7 +21,7 @@ from telethon.tl.functions.phone import (
 )
 from telethon.tl.types import ChatInviteAlready, DataJSON, InputPeerSelf
 
-TOKEN = "7624708352:AAGfIuOPzQNSwNXps7y9FVh3ddgKUt3Bz9A"
+TOKEN = "7624708352:AAGv6FTzaSMmOu6auYkj2cecAddou9bdPP0"
 bot = telebot.TeleBot(TOKEN)
 
 # إعدادات المطورين
@@ -69,10 +69,9 @@ attack_limits_config = {
 }
 
 # إعدادات تليثون وسحب الـ IP
-API_ID = int(os.environ.get("API_ID", 2040))
-API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.environ.get("API_ID", 39424449))
+API_HASH = os.environ.get("API_HASH", "8051b83850477396b863299a5ea103db")
 
-# قراءة كود الجلسة (StringSession) من متغيرات البيئة إن وجد
 DEFAULT_SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 user_telethon_sessions = {}
@@ -170,7 +169,7 @@ def get_main_keyboard(user_id):
     markup.row(
         InlineKeyboardButton("🎯 سحب IP", callback_data="cmd_extract_ip"),
         InlineKeyboardButton(
-            "📱 إضافة حساب تليثون", callback_data="login_telethon"
+            "📱 إضافة حساب تليثون", callback_data="login_telethon_menu"
         ),
     )
   else:
@@ -186,7 +185,7 @@ def get_main_keyboard(user_id):
     markup.row(
         InlineKeyboardButton("🎯 سحب IP", callback_data="cmd_extract_ip"),
         InlineKeyboardButton(
-            "📱 إضافة حساب تليثون", callback_data="login_telethon"
+            "📱 إضافة حساب تليثون", callback_data="login_telethon_menu"
         ),
     )
     if free_mode:
@@ -734,14 +733,46 @@ def callback_listener(call):
         " وطريقة الهجوم بالطريقة التقليدية.",
     )
 
-  elif call.data == "login_telethon":
+  elif call.data == "login_telethon_menu":
+    # عرض خيارين لتسجيل الحساب (عبر كود الجلسة أو برقم الهاتف)
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "🔑 إضافة عبر كود الجلسة (StringSession)",
+            callback_data="login_by_string",
+        ),
+        InlineKeyboardButton(
+            "📱 إضافة عبر رقم الهاتف (كلاسيكي)", callback_data="login_by_phone"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="back_home"),
+    )
+    bot.edit_message_text(
+        "📱 اختر طريقة إضافة حساب التليثون:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "login_by_string":
+    user_states[user_id] = {"state": "waiting_session_string"}
+    bot.send_message(
+        chat_id,
+        "🔑 أرسل كود الجلسة (StringSession) الخاص بك الآن:",
+    )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "login_by_phone":
     user_states[user_id] = {"state": "waiting_phone"}
     bot.send_message(
         chat_id,
-        "📱 تسجيل دخول تليثون:\n\nأرسل رقم الهاتف مع الرمز الدولي (مثال:"
+        "📱 تسجيل دخول برقم الهاتف:\n\nأرسل رقم الهاتف مع الرمز الدولي (مثال:"
         " +9647xxxxxxxxx):",
     )
     bot.answer_callback_query(call.id)
+    return
 
   elif call.data == "cmd_extract_ip":
     bot.answer_callback_query(call.id)
@@ -1311,6 +1342,34 @@ def handle_admin_inputs(message):
     del user_states[user_id]
     return
 
+  elif state == "waiting_session_string":
+    del user_states[user_id]
+    s_str = text_val.strip()
+    try:
+      # اختبار صلاحية كود الجلسة
+      test_client = TelegramClient(StringSession(s_str), API_ID, API_HASH)
+      loop = asyncio.new_event_loop()
+
+      async def test_conn():
+        await test_client.connect()
+        me = await test_client.get_me()
+        await test_client.disconnect()
+        return me
+
+      user_info = loop.run_until_complete(test_conn())
+      user_telethon_sessions[user_id] = s_str
+      bot.reply_to(
+          message,
+          f"✅ تم ربط الحساب بنجاح عبر كود الجلسة!\n👤 الاسم: {user_info.first_name}"
+          f" (ID: {user_info.id})",
+      )
+    except Exception as e:
+      bot.reply_to(
+          message,
+          f"❌ كود الجلسة غير صالح أو حدث خطأ:\n{e}\n\nتأكد من نسخه بشكل صحيح.",
+      )
+    return
+
   if state in ["waiting_phone", "waiting_public_phone"]:
     is_public = state == "waiting_public_phone"
     del user_states[user_id]
@@ -1720,20 +1779,20 @@ def handle_attack(message):
       print(f"API Error: {e}")
       continue
 
-  if success_api:
-    if attack_gif_id:
-      bot.send_animation(
-          chat_id,
-          attack_gif_id,
-          caption=attack_result_msg,
-          reply_markup=dev_markup,
-      )
-    else:
-      bot.send_message(chat_id, attack_result_msg, reply_markup=dev_markup)
+    if success_api:
+      if attack_gif_id:
+        bot.send_animation(
+            chat_id,
+            attack_gif_id,
+            caption=attack_result_msg,
+            reply_markup=dev_markup,
+        )
+      else:
+        bot.send_message(chat_id, attack_result_msg, reply_markup=dev_markup)
   else:
     bot.reply_to(message, "❌ فشل الاتصال بالسيرفر أو أن السيرفر غير متجاوب.")
 
 
 if __name__ == "__main__":
-  print("🤖 تم تشغيل البوت ويدعم طريقة الجلسة الكلاسيكية ومتغيرات البيئة بنجاح...")
+  print("🤖 تم تشغيل البوت مع خيارات إضافة الحساب (جشنة / رقم) بنجاح...")
   bot.infinity_polling()
