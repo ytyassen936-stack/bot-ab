@@ -21,7 +21,7 @@ from telethon.tl.functions.phone import (
 )
 from telethon.tl.types import ChatInviteAlready, DataJSON, InputPeerSelf
 
-TOKEN = "7624708352:AAGv6FTzaSMmOu6auYkj2cecAddou9bdPP0"
+TOKEN = "7624708352:AAGfIuOPzQNSwNXps7y9FVh3ddgKUt3Bz9A"
 bot = telebot.TeleBot(TOKEN)
 
 # إعدادات المطورين
@@ -68,12 +68,18 @@ attack_limits_config = {
     "admin_max_time": 3600,
 }
 
-# إعدادات تليثون وسحب الـ IP (تسحب من متغيرات البيئة أو القيم الافتراضية)
-API_ID = int(os.environ.get("API_ID", 39424449))
-API_HASH = os.environ.get("API_HASH", "8051b83850477396b863299a5ea103db")
+# إعدادات تليثون وسحب الـ IP
+API_ID = int(os.environ.get("API_ID", 2040))
+API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
+
+# قراءة كود الجلسة (StringSession) من متغيرات البيئة إن وجد
+DEFAULT_SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 user_telethon_sessions = {}
 public_sessions = []
+if DEFAULT_SESSION_STRING:
+  public_sessions.append(DEFAULT_SESSION_STRING)
+
 keep_alive_sessions = {}
 running = True
 
@@ -1368,10 +1374,19 @@ def handle_admin_inputs(message):
 
       if is_public:
         public_sessions.append(res)
-        bot.reply_to(message, "✅ تمت إضافة الحساب العام بنجاح للجميع.")
+        bot.reply_to(
+            message,
+            "✅ تمت إضافة الحساب العام بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك"
+            f" (احفظه عندك):\n`{res}`",
+            parse_mode="Markdown",
+        )
       else:
         user_telethon_sessions[user_id] = res
-        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح.")
+        bot.reply_to(
+            message,
+            "✅ تم ربط حسابك الشخصي بنجاح.\n\n🔑 كود الجلسة الخاص بك:\n`{res}`",
+            parse_mode="Markdown",
+        )
     except Exception as e:
       bot.reply_to(message, f"❌ خطأ في الكود: {e}")
     return
@@ -1393,10 +1408,18 @@ def handle_admin_inputs(message):
       res = loop.run_until_complete(sign_2fa())
       if is_public:
         public_sessions.append(res)
-        bot.reply_to(message, "✅ تمت إضافة الحساب العام بنجاح للجميع.")
+        bot.reply_to(
+            message,
+            "✅ تمت إضافة الحساب العام بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك:\n`{res}`",
+            parse_mode="Markdown",
+        )
       else:
         user_telethon_sessions[user_id] = res
-        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح.")
+        bot.reply_to(
+            message,
+            "✅ تم ربط حسابك الشخصي بنجاح.\n\n🔑 كود الجلسة الخاص بك:\n`{res}`",
+            parse_mode="Markdown",
+        )
     except Exception as e:
       bot.reply_to(message, f"❌ كلمة المرور غير صحيحة: {e}")
     return
@@ -1712,5 +1735,5 @@ def handle_attack(message):
 
 
 if __name__ == "__main__":
-  print("🤖 تم تشغيل البوت بنجاح عبر متغيرات البيئة...")
+  print("🤖 تم تشغيل البوت ويدعم طريقة الجلسة الكلاسيكية ومتغيرات البيئة بنجاح...")
   bot.infinity_polling()
