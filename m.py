@@ -1137,104 +1137,96 @@ def _run_extract(uid_e, chat_id, group_link):
   )
 
   def do_extract():
-    try:
-      loop = asyncio.new_event_loop()
-    except RuntimeError:
-      loop = asyncio.get_event_loop()
-    asyncio.set_event_loop(loop)
-
     saved_str = user_telethon_sessions.get(uid_e)
     if not saved_str and public_sessions:
       saved_str = public_sessions[0]
 
-    client = TelegramClient(StringSession(saved_str or ""), API_ID, API_HASH)
+    async def main_action():
+      client = TelegramClient(StringSession(saved_str or ""), API_ID, API_HASH)
+      async with client:
+        clean = group_link.split("?")[0].split("#")[0].strip().rstrip("/")
+        for prefix in ["https://t.me/", "http://t.me/", "t.me/", "@"]:
+          if clean.lower().startswith(prefix):
+            clean = clean[len(prefix) :]
+            break
+        if "/" in clean and not clean.startswith("+"):
+          clean = clean.split("/")[0]
 
-    async def extract():
-      if not client.is_connected():
-        await client.connect()
-      clean = group_link.split("?")[0].split("#")[0].strip().rstrip("/")
-      for prefix in ["https://t.me/", "http://t.me/", "t.me/", "@"]:
-        if clean.lower().startswith(prefix):
-          clean = clean[len(prefix) :]
-          break
-      if "/" in clean and not clean.startswith("+"):
-        clean = clean.split("/")[0]
-
-      if clean.startswith("+"):
-        invite_hash = clean[1:]
-        inv = await client(CheckChatInviteRequest(invite_hash))
-        if isinstance(inv, ChatInviteAlready):
-          entity = inv.chat
+        if clean.startswith("+"):
+          invite_hash = clean[1:]
+          inv = await client(CheckChatInviteRequest(invite_hash))
+          if isinstance(inv, ChatInviteAlready):
+            entity = inv.chat
+          else:
+            updates = await client(ImportChatInviteRequest(invite_hash))
+            entity = (
+                updates.chats[0]
+                if hasattr(updates, "chats") and updates.chats
+                else None
+            )
         else:
-          updates = await client(ImportChatInviteRequest(invite_hash))
-          entity = (
-              updates.chats[0]
-              if hasattr(updates, "chats") and updates.chats
-              else None
-          )
-      else:
-        entity = await client.get_entity(clean)
+          entity = await client.get_entity(clean)
 
-      full = await client(GetFullChannelRequest(entity))
-      call_input = getattr(full.full_chat, "call", None)
-      if not call_input:
-        return None
+        full = await client(GetFullChannelRequest(entity))
+        call_input = getattr(full.full_chat, "call", None)
+        if not call_input:
+          return None
 
-      ssrc = _random.randint(100000, 999999)
-      result = await client(
-          JoinGroupCallRequest(
-              call=call_input,
-              join_as=InputPeerSelf(),
-              params=DataJSON(
-                  data=_json.dumps({
-                      "ufrag": "xxxx",
-                      "pwd": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                      "fingerprints": [{
-                          "hash": "sha-256",
-                          "setup": "active",
-                          "fingerprint": (
-                              "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
-                          ),
-                      }],
-                      "ssrc": ssrc,
-                      "ssrc-groups": [],
-                  })
-              ),
-              muted=True,
-              video_stopped=True,
-          )
-      )
+        ssrc = _random.randint(100000, 999999)
+        result = await client(
+            JoinGroupCallRequest(
+                call=call_input,
+                join_as=InputPeerSelf(),
+                params=DataJSON(
+                    data=_json.dumps({
+                        "ufrag": "xxxx",
+                        "pwd": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                        "fingerprints": [{
+                            "hash": "sha-256",
+                            "setup": "active",
+                            "fingerprint": (
+                                "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+                            ),
+                        }],
+                        "ssrc": ssrc,
+                        "ssrc-groups": [],
+                    })
+                ),
+                muted=True,
+                video_stopped=True,
+            )
+        )
 
-      ips = []
-      for upd in result.updates:
-        raw = None
-        if hasattr(upd, "params") and hasattr(upd.params, "data"):
-          raw = upd.params.data
-        elif hasattr(upd, "call") and hasattr(
-            getattr(upd, "call", None), "params"
-        ):
-          raw = getattr(upd.call.params, "data", None)
-        if raw:
-          try:
-            for c in (
-                _json.loads(raw).get("transport", {}).get("candidates", [])
-            ):
-              ip = c.get("ip", "")
-              port = c.get("port", "")
-              if ip and port and not ip.startswith("0.") and ":" not in ip:
-                v = f"{ip} {port}"
-                if v not in ips:
-                  ips.append(v)
-          except Exception:
-            pass
-      try:
-        await client(LeaveGroupCallRequest(call=call_input, source=ssrc))
-      except Exception:
-        pass
-      return ips
+        ips = []
+        for upd in result.updates:
+          raw = None
+          if hasattr(upd, "params") and hasattr(upd.params, "data"):
+            raw = upd.params.data
+          elif hasattr(upd, "call") and hasattr(
+              getattr(upd, "call", None), "params"
+          ):
+            raw = getattr(upd.call.params, "data", None)
+          if raw:
+            try:
+              for c in (
+                  _json.loads(raw).get("transport", {}).get("candidates", [])
+              ):
+                ip = c.get("ip", "")
+                port = c.get("port", "")
+                if ip and port and not ip.startswith("0.") and ":" not in ip:
+                  v = f"{ip} {port}"
+                  if v not in ips:
+                    ips.append(v)
+            except Exception:
+              pass
+        try:
+          await client(LeaveGroupCallRequest(call=call_input, source=ssrc))
+        except Exception:
+          pass
+        return ips
 
     try:
-      results = loop.run_until_complete(extract())
+      results = asyncio.run(main_action())
       try:
         bot.delete_message(chat_id, wait_msg.message_id)
       except Exception:
@@ -1391,41 +1383,34 @@ def handle_admin_inputs(message):
     del user_states[user_id]
     s_str = text_val.strip()
     try:
-      # حفظ الجلسة مباشرة بدون اختبار اتصالات معقد حتى لا يتأثر بالخيوط (Threads)
       if is_public:
         public_sessions.append(s_str)
         bot.reply_to(
-            message,
-            "✅ تمت إضافة الحساب العام بنجاح عبر كود الجلسة للجميع وتثبيته!",
+            message, "✅ تمت إضافة الحساب العام عبر كود الجلسة للجميع بنجاح!"
         )
       else:
         user_telethon_sessions[user_id] = s_str
-        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح عبر كود الجلسة!")
+        bot.reply_to(
+            message, "✅ تم ربط حسابك الشخصي عبر كود الجلسة بنجاح تامة!"
+        )
     except Exception as e:
-      bot.reply_to(message, f"❌ حدث خطأ أثناء حفظ الجلسة: {e}")
+      bot.reply_to(message, f"❌ حدث خطأ: {e}")
     return
 
   if state in ["waiting_phone", "waiting_public_phone"]:
     is_public = state == "waiting_public_phone"
     del user_states[user_id]
     try:
-      try:
-        loop = asyncio.new_event_loop()
-      except RuntimeError:
-        loop = asyncio.get_event_loop()
-      asyncio.set_event_loop(loop)
-
       client = TelegramClient(StringSession(), API_ID, API_HASH)
 
       async def req_code():
         await client.connect()
         return await client.send_code_request(text_val)
 
-      sent = loop.run_until_complete(req_code())
+      sent = asyncio.run(req_code())
       user_states[user_id] = {
           "state": "waiting_code",
           "client": client,
-          "loop": loop,
           "phone": text_val,
           "phone_code_hash": sent.phone_code_hash,
           "is_public": is_public,
@@ -1441,32 +1426,28 @@ def handle_admin_inputs(message):
   elif state == "waiting_code":
     code = text_val.replace(" ", "")
     client = state_data["client"]
-    loop = state_data["loop"]
     phone = state_data["phone"]
     phone_code_hash = state_data["phone_code_hash"]
     is_public = state_data["is_public"]
     del user_states[user_id]
 
     try:
-      asyncio.set_event_loop(loop)
 
       async def sign():
-        try:
-          await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
-        except Exception as err:
-          if "password" in str(err).lower() or "2fa" in str(err).lower():
-            return "NEED_2FA"
-          raise err
-        s_str = client.session.save()
-        await client.disconnect()
-        return s_str
+        async with client:
+          try:
+            await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+          except Exception as err:
+            if "password" in str(err).lower() or "2fa" in str(err).lower():
+              return "NEED_2FA"
+            raise err
+          return client.session.save()
 
-      res = loop.run_until_complete(sign())
+      res = asyncio.run(sign())
       if res == "NEED_2FA":
         user_states[user_id] = {
             "state": "waiting_2fa",
             "client": client,
-            "loop": loop,
             "is_public": is_public,
         }
         bot.reply_to(message, "🔐 الحساب يحتاج كلمة مرور التحقق بخطوتين (2FA):")
@@ -1494,19 +1475,16 @@ def handle_admin_inputs(message):
   elif state == "waiting_2fa":
     password = text_val
     client = state_data["client"]
-    loop = state_data["loop"]
     is_public = state_data["is_public"]
     del user_states[user_id]
     try:
-      asyncio.set_event_loop(loop)
 
       async def sign_2fa():
-        await client.sign_in(password=password)
-        s_str = client.session.save()
-        await client.disconnect()
-        return s_str
+        async with client:
+          await client.sign_in(password=password)
+          return client.session.save()
 
-      res = loop.run_until_complete(sign_2fa())
+      res = asyncio.run(sign_2fa())
       if is_public:
         public_sessions.append(res)
         bot.reply_to(
@@ -1836,5 +1814,5 @@ def handle_attack(message):
 
 
 if __name__ == "__main__":
-  print("🤖 تم تشغيل البوت وتجاوز مشكلة Event Loop بنجاح...")
+  print("🤖 تم تشغيل البوت وإلغاء مشكلة Event Loop بالكامل بنجاح...")
   bot.infinity_polling()
