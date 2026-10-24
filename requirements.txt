@@ -1,6 +1,3 @@
-python-telegram-bot
-httpx
-aiohttp
-cryptography
-zipfile36
-pyTelegramBotAPI
+pyTelegramBotAPI==4.26.0
+Telethon==1.38.0
+requests==2.31.0
