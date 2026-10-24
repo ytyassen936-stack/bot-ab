@@ -9,6 +9,7 @@ import requests
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from telethon import TelegramClient
+from telethon.errors import ChatAdminRequiredError, UserBannedInChannelError, UserNotParticipantError
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import (
@@ -559,6 +560,9 @@ def callback_listener(call):
         InlineKeyboardButton(
             "📱 إضافة حساب عام عبر رقم هاتف", callback_data="add_public_by_phone"
         ),
+        InlineKeyboardButton(
+            f"📋 عرض الحسابات العامة ({len(public_sessions)})", callback_data="show_public_sessions"
+        ),
         InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
     )
     bot.edit_message_text(
@@ -567,6 +571,16 @@ def callback_listener(call):
         call.message.message_id,
         reply_markup=markup,
     )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "show_public_sessions":
+    if not is_admin(user_id):
+      return
+    t = f"📱 **الحسابات العامة المضافة ({len(public_sessions)}):**\n\n"
+    for idx, sess in enumerate(public_sessions, 1):
+      t += f"{idx}. `session_{idx}` (طول الكود: {len(sess)})\n"
+    bot.send_message(chat_id, t, parse_mode="Markdown")
     bot.answer_callback_query(call.id)
     return
 
@@ -1137,93 +1151,167 @@ def _run_extract(uid_e, chat_id, group_link):
   )
 
   def do_extract():
-    saved_str = user_telethon_sessions.get(uid_e)
-    if not saved_str and public_sessions:
-      saved_str = public_sessions[0]
+    # تجهيز قائمة الجلسات المتاحة للسحب (الخاصة بالمستخدم + العامة)
+    sessions_to_try = []
+    
+    user_sess = user_telethon_sessions.get(uid_e)
+    if user_sess:
+      sessions_to_try.append(user_sess)
+      
+    for ps in public_sessions:
+      if ps not in sessions_to_try:
+        sessions_to_try.append(ps)
+
+    if not sessions_to_try:
+      try:
+        bot.delete_message(chat_id, wait_msg.message_id)
+      except Exception:
+        pass
+      bot.send_message(chat_id, "⚠️ لا توجد حسابات تليثون مسجلة لسحب الـ IP.")
+      return
 
     async def main_action():
-      client = TelegramClient(StringSession(saved_str or ""), API_ID, API_HASH)
-      async with client:
-        clean = group_link.split("?")[0].split("#")[0].strip().rstrip("/")
-        for prefix in ["https://t.me/", "http://t.me/", "t.me/", "@"]:
-          if clean.lower().startswith(prefix):
-            clean = clean[len(prefix) :]
-            break
-        if "/" in clean and not clean.startswith("+"):
-          clean = clean.split("/")[0]
-
-        if clean.startswith("+"):
-          invite_hash = clean[1:]
-          inv = await client(CheckChatInviteRequest(invite_hash))
-          if isinstance(inv, ChatInviteAlready):
-            entity = inv.chat
-          else:
-            updates = await client(ImportChatInviteRequest(invite_hash))
-            entity = (
-                updates.chats[0]
-                if hasattr(updates, "chats") and updates.chats
-                else None
-            )
-        else:
-          entity = await client.get_entity(clean)
-
-        full = await client(GetFullChannelRequest(entity))
-        call_input = getattr(full.full_chat, "call", None)
-        if not call_input:
-          return None
-
-        ssrc = _random.randint(100000, 999999)
-        result = await client(
-            JoinGroupCallRequest(
-                call=call_input,
-                join_as=InputPeerSelf(),
-                params=DataJSON(
-                    data=_json.dumps({
-                        "ufrag": "xxxx",
-                        "pwd": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                        "fingerprints": [{
-                            "hash": "sha-256",
-                            "setup": "active",
-                            "fingerprint": (
-                                "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
-                            ),
-                        }],
-                        "ssrc": ssrc,
-                        "ssrc-groups": [],
-                    })
-                ),
-                muted=True,
-                video_stopped=True,
-            )
-        )
-
-        ips = []
-        for upd in result.updates:
-          raw = None
-          if hasattr(upd, "params") and hasattr(upd.params, "data"):
-            raw = upd.params.data
-          elif hasattr(upd, "call") and hasattr(
-              getattr(upd, "call", None), "params"
-          ):
-            raw = getattr(upd.call.params, "data", None)
-          if raw:
-            try:
-              for c in (
-                  _json.loads(raw).get("transport", {}).get("candidates", [])
-              ):
-                ip = c.get("ip", "")
-                port = c.get("port", "")
-                if ip and port and not ip.startswith("0.") and ":" not in ip:
-                  v = f"{ip} {port}"
-                  if v not in ips:
-                    ips.append(v)
-            except Exception:
-              pass
+      last_error_msg = ""
+      for sess_str in sessions_to_try:
+        client = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
         try:
-          await client(LeaveGroupCallRequest(call=call_input, source=ssrc))
-        except Exception:
-          pass
-        return ips
+          await client.connect()
+          if not await client.is_user_authorized():
+            await client.disconnect()
+            continue
+
+          clean = group_link.split("?")[0].split("#")[0].strip().rstrip("/")
+          for prefix in ["https://t.me/", "http://t.me/", "t.me/", "@"]:
+            if clean.lower().startswith(prefix):
+              clean = clean[len(prefix) :]
+              break
+          if "/" in clean and not clean.startswith("+"):
+            clean = clean.split("/")[0]
+
+          entity = None
+          if clean.startswith("+"):
+            invite_hash = clean[1:]
+            try:
+              inv = await client(CheckChatInviteRequest(invite_hash))
+              if isinstance(inv, ChatInviteAlready):
+                entity = inv.chat
+              else:
+                updates = await client(ImportChatInviteRequest(invite_hash))
+                entity = (
+                    updates.chats[0]
+                    if hasattr(updates, "chats") and updates.chats
+                    else None
+                )
+            except Exception as e:
+              err_str = str(e).lower()
+              if "invite_request_sent" in err_str:
+                return "PENDING_APPROVAL"
+              raise e
+          else:
+            try:
+              entity = await client.get_entity(clean)
+            except (UserNotParticipantError, UserBannedInChannelError):
+              return "BANNED_OR_KICKED"
+            except Exception as e:
+              # محاولة الانضمام للرابط المباشر للمجموعة العامة إذا لم يكن منضم
+              try:
+                updates = await client(ImportChatInviteRequest(clean))
+                entity = updates.chats[0] if hasattr(updates, "chats") and updates.chats else None
+              except Exception:
+                raise e
+
+          if not entity:
+            await client.disconnect()
+            continue
+
+          try:
+            full = await client(GetFullChannelRequest(entity))
+          except (UserNotParticipantError, UserBannedInChannelError, ChatAdminRequiredError):
+            await client.disconnect()
+            return "BANNED_OR_KICKED"
+            
+          call_input = getattr(full.full_chat, "call", None)
+          if not call_input:
+            await client.disconnect()
+            continue
+
+          ssrc = _random.randint(100000, 999999)
+          result = await client(
+              JoinGroupCallRequest(
+                  call=call_input,
+                  join_as=InputPeerSelf(),
+                  params=DataJSON(
+                      data=_json.dumps({
+                          "ufrag": "xxxx",
+                          "pwd": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                          "fingerprints": [{
+                              "hash": "sha-256",
+                              "setup": "active",
+                              "fingerprint": (
+                                  "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+                              ),
+                          }],
+                          "ssrc": ssrc,
+                          "ssrc-groups": [],
+                      })
+                  ),
+                  muted=True,
+                  video_stopped=True,
+              )
+          )
+
+          ips = []
+          for upd in result.updates:
+            raw = None
+            if hasattr(upd, "params") and hasattr(upd.params, "data"):
+              raw = upd.params.data
+            elif hasattr(upd, "call") and hasattr(
+                getattr(upd, "call", None), "params"
+            ):
+              raw = getattr(upd.call.params, "data", None)
+            if raw:
+              try:
+                for c in (
+                    _json.loads(raw).get("transport", {}).get("candidates", [])
+                ):
+                  ip = c.get("ip", "")
+                  port = c.get("port", "")
+                  if ip and port and not ip.startswith("0.") and ":" not in ip:
+                    v = f"{ip} {port}"
+                    if v not in ips:
+                      ips.append(v)
+              except Exception:
+                pass
+          try:
+            await client(LeaveGroupCallRequest(call=call_input, source=ssrc))
+          except Exception:
+            pass
+          
+          await client.disconnect()
+          if ips:
+            return ips
+        except (UserBannedInChannelError, UserNotParticipantError):
+          last_error_msg = "BANNED_OR_KICKED"
+          try:
+            await client.disconnect()
+          except:
+            pass
+          continue
+        except Exception as ex:
+          err_str = str(ex).lower()
+          if "banned" in err_str or "participant" in err_str or "kick" in err_str:
+            last_error_msg = "BANNED_OR_KICKED"
+          elif "invite_request_sent" in err_str:
+            last_error_msg = "PENDING_APPROVAL"
+          else:
+            last_error_msg = str(ex)
+          try:
+            await client.disconnect()
+          except:
+            pass
+          continue
+          
+      return last_error_msg
 
     try:
       results = asyncio.run(main_action())
@@ -1231,13 +1319,18 @@ def _run_extract(uid_e, chat_id, group_link):
         bot.delete_message(chat_id, wait_msg.message_id)
       except Exception:
         pass
-      if results:
+        
+      if results == "BANNED_OR_KICKED":
+        bot.send_message(chat_id, "❌ عذرا تم حظر حسابات البوت من المجموعه.")
+      elif results == "PENDING_APPROVAL":
+        bot.send_message(chat_id, "⏳ ينتظر حتى قبول طلب الانضمام للمجموعة.")
+      elif isinstance(results, list) and results:
         bot.send_message(
             chat_id,
             "\n".join(results),
         )
       else:
-        bot.send_message(chat_id, "⚠️ لا توجد مكالمة نشطة حالياً في المجموعة.")
+        bot.send_message(chat_id, "⚠️ لا توجد مكالمة نشطة حالياً في المجموعة أو فشلت جميع الحسابات بالوصول إليها.")
     except Exception as eg:
       try:
         bot.delete_message(chat_id, wait_msg.message_id)
@@ -1386,7 +1479,7 @@ def handle_admin_inputs(message):
       if is_public:
         public_sessions.append(s_str)
         bot.reply_to(
-            message, "✅ تمت إضافة الحساب العام عبر كود الجلسة للجميع بنجاح!"
+            message, f"✅ تمت إضافة الحساب العام رقم ({len(public_sessions)}) عبر كود الجلسة بنجاح!"
         )
       else:
         user_telethon_sessions[user_id] = s_str
@@ -1457,7 +1550,7 @@ def handle_admin_inputs(message):
         public_sessions.append(res)
         bot.reply_to(
             message,
-            "✅ تمت إضافة الحساب العام بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك"
+            f"✅ تمت إضافة الحساب العام رقم ({len(public_sessions)}) بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك"
             f" (احفظه عندك):\n`{res}`",
             parse_mode="Markdown",
         )
@@ -1489,7 +1582,7 @@ def handle_admin_inputs(message):
         public_sessions.append(res)
         bot.reply_to(
             message,
-            "✅ تمت إضافة الحساب العام بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك:\n`{res}`",
+            f"✅ تمت إضافة الحساب العام رقم ({len(public_sessions)}) بنجاح للجميع.\n\n🔑 كود الجلسة الخاص بك:\n`{res}`",
             parse_mode="Markdown",
         )
       else:
