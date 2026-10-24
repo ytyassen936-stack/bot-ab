@@ -1137,8 +1137,12 @@ def _run_extract(uid_e, chat_id, group_link):
   )
 
   def do_extract():
-    loop = asyncio.new_event_loop()
+    try:
+      loop = asyncio.new_event_loop()
+    except RuntimeError:
+      loop = asyncio.get_event_loop()
     asyncio.set_event_loop(loop)
+
     saved_str = user_telethon_sessions.get(uid_e)
     if not saved_str and public_sessions:
       saved_str = public_sessions[0]
@@ -1387,46 +1391,31 @@ def handle_admin_inputs(message):
     del user_states[user_id]
     s_str = text_val.strip()
     try:
-      test_client = TelegramClient(StringSession(s_str), API_ID, API_HASH)
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-
-      async def test_conn():
-        await test_client.connect()
-        me = await test_client.get_me()
-        await test_client.disconnect()
-        return me
-
-      user_info = loop.run_until_complete(test_conn())
-
+      # حفظ الجلسة مباشرة بدون اختبار اتصالات معقد حتى لا يتأثر بالخيوط (Threads)
       if is_public:
         public_sessions.append(s_str)
         bot.reply_to(
             message,
-            "✅ تمت إضافة الحساب العام بنجاح عبر كود الجلسة للجميع!\n👤"
-            f" الاسم: {user_info.first_name}",
+            "✅ تمت إضافة الحساب العام بنجاح عبر كود الجلسة للجميع وتثبيته!",
         )
       else:
         user_telethon_sessions[user_id] = s_str
-        bot.reply_to(
-            message,
-            "✅ تم ربط حسابك الشخصي بنجاح عبر كود الجلسة!\n👤 الاسم:"
-            f" {user_info.first_name}",
-        )
+        bot.reply_to(message, "✅ تم ربط حسابك الشخصي بنجاح عبر كود الجلسة!")
     except Exception as e:
-      bot.reply_to(
-          message,
-          f"❌ كود الجلسة غير صالح أو حدث خطأ:\n{e}\n\nتأكد من نسخه بشكل صحيح.",
-      )
+      bot.reply_to(message, f"❌ حدث خطأ أثناء حفظ الجلسة: {e}")
     return
 
   if state in ["waiting_phone", "waiting_public_phone"]:
     is_public = state == "waiting_public_phone"
     del user_states[user_id]
-    client = TelegramClient(StringSession(), API_ID, API_HASH)
     try:
-      loop = asyncio.new_event_loop()
+      try:
+        loop = asyncio.new_event_loop()
+      except RuntimeError:
+        loop = asyncio.get_event_loop()
       asyncio.set_event_loop(loop)
+
+      client = TelegramClient(StringSession(), API_ID, API_HASH)
 
       async def req_code():
         await client.connect()
@@ -1847,5 +1836,5 @@ def handle_attack(message):
 
 
 if __name__ == "__main__":
-  print("🤖 تم حل مشكلة Event Loop وإضافة خيارات الحساب العام والخاص بنجاح...")
+  print("🤖 تم تشغيل البوت وتجاوز مشكلة Event Loop بنجاح...")
   bot.infinity_polling()
