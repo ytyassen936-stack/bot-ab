@@ -20,7 +20,7 @@ from telethon.tl.functions.phone import (
 )
 from telethon.tl.types import ChatInviteAlready, DataJSON, InputPeerSelf
 
-TOKEN = "7624708352:AAGfIuOPzQNSwNXps7y9FVh3ddgKUt3Bz9A"
+TOKEN = "7624708352:AAGv6FTzaSMmOu6auYkj2cecAddou9bdPP0"
 bot = telebot.TeleBot(TOKEN)
 
 # إعدادات المطورين
