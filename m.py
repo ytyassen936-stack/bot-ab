@@ -485,7 +485,7 @@ def callback_listener(call):
             "📢 الاشتراك الإجباري", callback_data="admin_fsub_menu"
         ),
         InlineKeyboardButton(
-            "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon"
+            "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon_menu"
         ),
         InlineKeyboardButton(
             "🎬 تعيين المتحركة GIF", callback_data="set_gif"
@@ -547,7 +547,43 @@ def callback_listener(call):
     bot.send_message(chat_id, t, parse_mode="Markdown")
     bot.answer_callback_query(call.id)
 
-  elif call.data == "add_public_telethon":
+  elif call.data == "add_public_telethon_menu":
+    if not is_admin(user_id):
+      return
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(
+            "🔑 إضافة حساب عام عبر كود جلسة",
+            callback_data="add_public_by_string",
+        ),
+        InlineKeyboardButton(
+            "📱 إضافة حساب عام عبر رقم هاتف", callback_data="add_public_by_phone"
+        ),
+        InlineKeyboardButton("🔙 رجوع", callback_data="admin_settings_menu"),
+    )
+    bot.edit_message_text(
+        "🌐 اختر طريقة إضافة حساب عام للجميع:",
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+    )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "add_public_by_string":
+    if not is_admin(user_id):
+      return
+    user_states[user_id] = {
+        "state": "waiting_session_string",
+        "is_public": True,
+    }
+    bot.send_message(
+        chat_id, "🔑 أرسل كود الجلسة (StringSession) للحساب العام:"
+    )
+    bot.answer_callback_query(call.id)
+    return
+
+  elif call.data == "add_public_by_phone":
     if not is_admin(user_id):
       return
     user_states[user_id] = {"state": "waiting_public_phone"}
@@ -557,6 +593,7 @@ def callback_listener(call):
         " +9647xxxxxxxxx):",
     )
     bot.answer_callback_query(call.id)
+    return
 
   elif call.data == "admin_fsub_menu":
     if not is_admin(user_id):
@@ -734,7 +771,6 @@ def callback_listener(call):
     )
 
   elif call.data == "login_telethon_menu":
-    # عرض خيارين لتسجيل الحساب (عبر كود الجلسة أو برقم الهاتف)
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton(
@@ -747,7 +783,7 @@ def callback_listener(call):
         InlineKeyboardButton("🔙 رجوع", callback_data="back_home"),
     )
     bot.edit_message_text(
-        "📱 اختر طريقة إضافة حساب التليثون:",
+        "📱 اختر طريقة إضافة حساب التليثون الخاص بك:",
         chat_id,
         call.message.message_id,
         reply_markup=markup,
@@ -756,7 +792,10 @@ def callback_listener(call):
     return
 
   elif call.data == "login_by_string":
-    user_states[user_id] = {"state": "waiting_session_string"}
+    user_states[user_id] = {
+        "state": "waiting_session_string",
+        "is_public": False,
+    }
     bot.send_message(
         chat_id,
         "🔑 أرسل كود الجلسة (StringSession) الخاص بك الآن:",
@@ -1073,7 +1112,7 @@ def admin_settings_refresh(chat_id, msg_id, user_id):
           "📢 الاشتراك الإجباري", callback_data="admin_fsub_menu"
       ),
       InlineKeyboardButton(
-          "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon"
+          "📱 إضافة حساب عام (للكل)", callback_data="add_public_telethon_menu"
       ),
       InlineKeyboardButton("🎬 تعيين المتحركة GIF", callback_data="set_gif"),
       InlineKeyboardButton("🎥 تعيين الشروحات", callback_data="admin_tut_menu"),
@@ -1099,6 +1138,7 @@ def _run_extract(uid_e, chat_id, group_link):
 
   def do_extract():
     loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     saved_str = user_telethon_sessions.get(uid_e)
     if not saved_str and public_sessions:
       saved_str = public_sessions[0]
@@ -1343,12 +1383,13 @@ def handle_admin_inputs(message):
     return
 
   elif state == "waiting_session_string":
+    is_public = state_data.get("is_public", False)
     del user_states[user_id]
     s_str = text_val.strip()
     try:
-      # اختبار صلاحية كود الجلسة
       test_client = TelegramClient(StringSession(s_str), API_ID, API_HASH)
       loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
 
       async def test_conn():
         await test_client.connect()
@@ -1357,12 +1398,21 @@ def handle_admin_inputs(message):
         return me
 
       user_info = loop.run_until_complete(test_conn())
-      user_telethon_sessions[user_id] = s_str
-      bot.reply_to(
-          message,
-          f"✅ تم ربط الحساب بنجاح عبر كود الجلسة!\n👤 الاسم: {user_info.first_name}"
-          f" (ID: {user_info.id})",
-      )
+
+      if is_public:
+        public_sessions.append(s_str)
+        bot.reply_to(
+            message,
+            "✅ تمت إضافة الحساب العام بنجاح عبر كود الجلسة للجميع!\n👤"
+            f" الاسم: {user_info.first_name}",
+        )
+      else:
+        user_telethon_sessions[user_id] = s_str
+        bot.reply_to(
+            message,
+            "✅ تم ربط حسابك الشخصي بنجاح عبر كود الجلسة!\n👤 الاسم:"
+            f" {user_info.first_name}",
+        )
     except Exception as e:
       bot.reply_to(
           message,
@@ -1376,6 +1426,7 @@ def handle_admin_inputs(message):
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     try:
       loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
 
       async def req_code():
         await client.connect()
@@ -1408,6 +1459,7 @@ def handle_admin_inputs(message):
     del user_states[user_id]
 
     try:
+      asyncio.set_event_loop(loop)
 
       async def sign():
         try:
@@ -1457,6 +1509,7 @@ def handle_admin_inputs(message):
     is_public = state_data["is_public"]
     del user_states[user_id]
     try:
+      asyncio.set_event_loop(loop)
 
       async def sign_2fa():
         await client.sign_in(password=password)
@@ -1794,5 +1847,5 @@ def handle_attack(message):
 
 
 if __name__ == "__main__":
-  print("🤖 تم تشغيل البوت مع خيارات إضافة الحساب (جشنة / رقم) بنجاح...")
+  print("🤖 تم حل مشكلة Event Loop وإضافة خيارات الحساب العام والخاص بنجاح...")
   bot.infinity_polling()
