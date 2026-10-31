@@ -1,9 +1,5 @@
-pyTelegramBotAPI==4.26.0
-Telethon==1.38.0
-requests==2.31.0
-pysocks==1.7.1
-h2==4.1.0
-hpack==4.0.0
-hyperframe==6.0.1
-aiofiles==23.2.1
-async-timeout==4.0.3
+python-telegram-bot
+httpx
+aiohttp
+cryptography
+zipfile36
