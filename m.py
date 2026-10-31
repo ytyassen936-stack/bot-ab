@@ -17,7 +17,7 @@ from aiohttp import web
 # ==================== الإعدادات الأساسية ====================
 BOT_TOKEN = "8738113127:AAFWxlU4O_PUS_18w80uibe6RdoP6S80A_E"
 OWNER_ID = 7493679412  # ضع ايديك هنا كمالك أساسي للبوت
-DEVELOPER_LINK = "https://t.me/XX7X6"
+DEVELOPER_LINK = "https://t.me/xx7x6"
 
 DB_FILE = "bot_database.json"
 HOST_DIR = "./hosted_bots"
@@ -143,7 +143,7 @@ async def check_force_join(user_id, bot):
     except Exception:
         return True
 
-# ==================== فحص وتثبيت المكتبات المطور تلقائياً ====================
+# ==================== فحص وتثبيت المكتبات تلقائياً ====================
 STDLIB_MODULES = {
     'os', 'sys', 'time', 'math', 'random', 'json', 're', 'asyncio', 'datetime',
     'subprocess', 'threading', 'typing', 'sqlite3', 'urllib', 'http', 'base64',
@@ -151,7 +151,6 @@ STDLIB_MODULES = {
     'pickle', 'urllib3', 'uuid', 'io', 'collections', 'string', 'glob', 'tempfile'
 }
 
-# أسماء بديلة للمكتبات التي يختلف اسم استيرادها عن اسم تثبيتها في pip
 PACKAGE_MAPPING = {
     'telebot': 'pyTelegramBotAPI',
     'telegram': 'python-telegram-bot',
@@ -165,12 +164,9 @@ def extract_requirements(file_path):
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
-        
-        # استخراج الكلمات بعد import و from
         imports = re.findall(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
         for mod in imports:
             if mod not in STDLIB_MODULES:
-                # تحويل اسم الحزمة إلى اسمها الصحيح في pip إن وجد في القاموس
                 pkg_name = PACKAGE_MAPPING.get(mod, mod)
                 modules.add(pkg_name)
     except Exception as e:
@@ -262,186 +258,200 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(user_id)
     )
 
-# ==================== معالجة الأزرار الشاملة ====================
+# ==================== معالجة الأزرار (ببدء استجابة فورية) ====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     user_id = query.from_user.id
 
     if is_banned(user_id):
-        await query.message.reply_text("❌ أنت محظور من استخدام البوت.")
+        try:
+            await query.message.reply_text("❌ أنت محظور من استخدام البوت.")
+        except Exception:
+            pass
         return
 
     data = query.data
 
-    if data == "upload_file":
-        if not is_authorized(user_id):
-            await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
-            return
+    try:
+        if data == "upload_file":
+            if not is_authorized(user_id):
+                await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
+                return
 
-        max_allowed = get_max_bots(user_id)
-        current_files = get_user_files(user_id)
-        if len(current_files) >= max_allowed:
-            await query.message.reply_text(
-                f"⚠️ لقد وصلت للحد الأقصى المسموح لك بحدود اشتراكك ({max_allowed} بوت).\n"
-                f"قم بحذف ملف من قائمة (📂 ملفاتي) لرفع ملف جديد."
-            )
-            return
+            max_allowed = get_max_bots(user_id)
+            current_files = get_user_files(user_id)
+            if len(current_files) >= max_allowed:
+                await query.message.reply_text(
+                    f"⚠️ لقد وصلت للحد الأقصى المسموح لك بحدود اشتراكك ({max_allowed} بوت).\n"
+                    f"قم بحذف ملف من قائمة (📂 ملفاتي) لرفع ملف جديد."
+                )
+                return
 
-        context.user_data["awaiting_file"] = True
-        await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم فحص مكتباته وتثبيتها تلقائياً.")
+            context.user_data["awaiting_file"] = True
+            await query.message.reply_text("أرسل لي الآن ملف البوت/الأداة ببرمجة Python (`.py`). وسيتم فحص مكتباته وتثبيتها تلقائياً.")
 
-    elif data == "my_files":
-        files = get_user_files(user_id)
-        if not files:
-            await query.message.reply_text("📂 لا توجد لديك أي ملفات مرفوعة حالياً في قائمة ملفاتك.")
-            return
+        elif data == "my_files":
+            files = get_user_files(user_id)
+            if not files:
+                await query.message.reply_text("📂 لا توجد لديك أي ملفات مرفوعة حالياً في قائمة ملفاتك.")
+                return
 
-        msg = "📂 **قائمة ملفاتك المخزنة:**\n\n"
-        buttons = []
-        for f in files:
-            clean_name = f.replace(f"{user_id}_", "")
-            full_path = os.path.join(HOST_DIR, f)
-            status = "مشتغل ✅" if (full_path in running_processes and running_processes[full_path].poll() is None) else "متوقف ❌"
-            msg += f"• `{clean_name}` - الحالة: {status}\n"
-            buttons.append([InlineKeyboardButton(f"⚡ تشغيل {clean_name}", callback_data=f"run_{f}"),
-                            InlineKeyboardButton(f"🗑️ حذف", callback_data=f"del_{f}")])
+            msg = "📂 **قائمة ملفاتك المخزنة:**\n\n"
+            buttons = []
+            for f in files:
+                clean_name = f.replace(f"{user_id}_", "")
+                full_path = os.path.join(HOST_DIR, f)
+                status = "مشتغل ✅" if (full_path in running_processes and running_processes[full_path].poll() is None) else "متوقف ❌"
+                msg += f"• `{clean_name}` - الحالة: {status}\n"
+                buttons.append([InlineKeyboardButton(f"⚡ تشغيل {clean_name}", callback_data=f"run_{f}"),
+                                InlineKeyboardButton(f"🗑️ حذف", callback_data=f"del_{f}")])
 
-        buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
-        await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+            buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
+            await query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-    elif data == "run_file_menu":
-        if not is_authorized(user_id):
-            await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
-            return
+        elif data == "run_file_menu":
+            if not is_authorized(user_id):
+                await query.message.reply_text("❌ غير مصرح لك أو انتهت مدة اشتراكك، راسل المطور لتفعيل حسابك.")
+                return
 
-        files = get_user_files(user_id)
-        if not files:
-            await query.message.reply_text("⚠️ لا توجد لديك ملفات مخزنة لتشغيلها. قم بإضافة ملف أولاً.")
-            return
+            files = get_user_files(user_id)
+            if not files:
+                await query.message.reply_text("⚠️ لا توجد لديك ملفات مخزنة لتشغيلها. قم بإضافة ملف أولاً.")
+                return
 
-        buttons = []
-        for f in files:
-            clean_name = f.replace(f"{user_id}_", "")
-            buttons.append([InlineKeyboardButton(f"▶️ تشغيل: {clean_name}", callback_data=f"run_{f}")])
+            buttons = []
+            for f in files:
+                clean_name = f.replace(f"{user_id}_", "")
+                buttons.append([InlineKeyboardButton(f"▶️ تشغيل: {clean_name}", callback_data=f"run_{f}")])
 
-        buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
-        await query.message.reply_text("اختر الملف الذي تريد تشغيله من قائمة ملفاتك:", reply_markup=InlineKeyboardMarkup(buttons))
+            buttons.append([InlineKeyboardButton("🔙 العودة", callback_data="back_main")])
+            await query.message.reply_text("اختر الملف الذي تريد تشغيله من قائمة ملفاتك:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    elif data.startswith("run_"):
-        file_name = data.replace("run_", "")
-        file_path = os.path.join(HOST_DIR, file_name)
-        
-        if not os.path.exists(file_path):
-            await query.message.reply_text("❌ الملف غير موجود في قائمة ملفاتك.")
-            return
+        elif data.startswith("run_"):
+            file_name = data.replace("run_", "")
+            file_path = os.path.join(HOST_DIR, file_name)
+            
+            if not os.path.exists(file_path):
+                await query.message.reply_text("❌ الملف غير موجود في قائمة ملفاتك.")
+                return
 
-        # فحص المكتبات وتثبيتها تلقائياً قبل التشغيل مباشرة للتأكد
-        modules = extract_requirements(file_path)
-        if modules:
-            await query.message.reply_text(f"📦 جاري التحقق وتثبيت المكتبات المطلوبة:\n`{', '.join(modules)}`...")
-            await install_requirements(modules)
+            modules = extract_requirements(file_path)
+            if modules:
+                await query.message.reply_text(f"📦 جاري التحقق وتثبيت المكتبات المطلوبة:\n`{', '.join(modules)}`...")
+                await install_requirements(modules)
 
-        if file_path in running_processes:
+            if file_path in running_processes:
+                try:
+                    running_processes[file_path].terminate()
+                    running_processes[file_path].wait(timeout=2)
+                except Exception:
+                    pass
+
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+
             try:
-                running_processes[file_path].terminate()
-                running_processes[file_path].wait(timeout=2)
-            except Exception:
-                pass
+                process = subprocess.Popen(
+                    ["python3", file_path],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                running_processes[file_path] = process
+                asyncio.create_task(monitor_process(file_path, user_id, context.bot))
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+                clean_name = file_name.replace(f"{user_id}_", "")
+                await query.message.reply_text(f"🚀 **تم تشغيل الملف بنجاح:** `{clean_name}`", parse_mode="Markdown")
+            except Exception as e:
+                await query.message.reply_text(f"❌ حدث خطأ أثناء التشغيل:\n`{str(e)}`", parse_mode="Markdown")
 
+        elif data.startswith("del_"):
+            file_name = data.replace("del_", "")
+            file_path = os.path.join(HOST_DIR, file_name)
+
+            if file_path in running_processes:
+                try:
+                    running_processes[file_path].terminate()
+                except Exception:
+                    pass
+
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                clean_name = file_name.replace(f"{user_id}_", "")
+                await query.message.reply_text(f"🗑️ تم حذف الملف `{clean_name}` بنجاح.", parse_mode="Markdown")
+            else:
+                await query.message.reply_text("❌ الملف غير موجود.")
+
+        elif data == "back_main":
+            await query.message.reply_text("القائمة الرئيسية:", reply_markup=get_main_keyboard(user_id))
+
+        elif data == "dev_settings":
+            if not is_dev(user_id):
+                await query.message.reply_text("❌ هذا الخيار مخصص للمطورين فقط.")
+                return
+            await query.message.reply_text("⚙️ **لوحة إعدادات المطورين:**", reply_markup=get_dev_keyboard(), parse_mode="Markdown")
+
+        elif data == "toggle_free":
+            if not is_dev(user_id): return
+            db["free_mode"] = not db.get("free_mode", False)
+            save_db(db)
+            await query.message.reply_text(f"تم تغيير الوضع المجاني إلى: {db['free_mode']}")
+
+        elif data == "get_backup":
+            if not is_dev(user_id): return
+            await send_backup(context.bot, user_id)
+
+        elif data == "toggle_ban":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "ban"
+            await query.message.reply_text("أرسل الـ ID للشخص المراد حظره أو إلغاء حظره:")
+
+        elif data == "add_sub":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "add_sub_step1"
+            await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك عادي (1 بوت):")
+
+        elif data == "add_vip":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "add_vip_step1"
+            await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك VIP (3 بوتات):")
+
+        elif data == "add_dev":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "add_dev"
+            await query.message.reply_text("أرسل الـ ID للشخص المراد رفعه مطور:")
+
+        elif data == "remove_dev":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "remove_dev"
+            await query.message.reply_text("أرسل الـ ID للمطور المراد تنزيله من قائمة المطورين:")
+
+        elif data == "broadcast":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "broadcast"
+            await query.message.reply_text("أرسل النص المراد إرساله للإذاعة لجميع المشتركين:")
+
+        elif data == "set_force_channel":
+            if not is_dev(user_id): return
+            context.user_data["action"] = "set_force_channel"
+            await query.message.reply_text("أرسل معرف القناة مع الـ @ (مثال: `@MyChannel`) أو اتركها فارغة للإلغاء:")
+
+        elif data == "restore_backup":
+            if not is_dev(user_id): return
+            context.user_data["awaiting_backup_file"] = True
+            await query.message.reply_text("أرسل الآن ملف النسخة الاحتياطية (`.json`).")
+
+    except Exception as e:
+        print(f"خطأ في معالجة الأزرار: {e}")
         try:
-            process = subprocess.Popen(
-                ["python3", file_path],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            running_processes[file_path] = process
-            asyncio.create_task(monitor_process(file_path, user_id, context.bot))
-
-            clean_name = file_name.replace(f"{user_id}_", "")
-            await query.message.reply_text(f"🚀 **تم تشغيل الملف بنجاح:** `{clean_name}`", parse_mode="Markdown")
-        except Exception as e:
-            await query.message.reply_text(f"❌ حدث خطأ أثناء التشغيل:\n`{str(e)}`", parse_mode="Markdown")
-
-    elif data.startswith("del_"):
-        file_name = data.replace("del_", "")
-        file_path = os.path.join(HOST_DIR, file_name)
-
-        if file_path in running_processes:
-            try:
-                running_processes[file_path].terminate()
-            except Exception:
-                pass
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            clean_name = file_name.replace(f"{user_id}_", "")
-            await query.message.reply_text(f"🗑️ تم حذف الملف `{clean_name}` بنجاح.", parse_mode="Markdown")
-        else:
-            await query.message.reply_text("❌ الملف غير موجود.")
-
-    elif data == "back_main":
-        await query.message.reply_text("القائمة الرئيسية:", reply_markup=get_main_keyboard(user_id))
-
-    elif data == "dev_settings":
-        if not is_dev(user_id):
-            await query.message.reply_text("❌ هذا الخيار مخصص للمطورين فقط.")
-            return
-        await query.message.reply_text("⚙️ **لوحة إعدادات المطورين:**", reply_markup=get_dev_keyboard(), parse_mode="Markdown")
-
-    elif data == "toggle_free":
-        if not is_dev(user_id): return
-        db["free_mode"] = not db.get("free_mode", False)
-        save_db(db)
-        await query.message.reply_text(f"تم تغيير الوضع المجاني إلى: {db['free_mode']}")
-
-    elif data == "get_backup":
-        if not is_dev(user_id): return
-        await send_backup(context.bot, user_id)
-
-    elif data == "toggle_ban":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "ban"
-        await query.message.reply_text("أرسل الـ ID للشخص المراد حظره أو إلغاء حظره:")
-
-    elif data == "add_sub":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "add_sub_step1"
-        await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك عادي (1 بوت):")
-
-    elif data == "add_vip":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "add_vip_step1"
-        await query.message.reply_text("أرسل الـ ID للشخص المراد إضافته كمشترك VIP (3 بوتات):")
-
-    elif data == "add_dev":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "add_dev"
-        await query.message.reply_text("أرسل الـ ID للشخص المراد رفعه مطور:")
-
-    elif data == "remove_dev":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "remove_dev"
-        await query.message.reply_text("أرسل الـ ID للمطور المراد تنزيله من قائمة المطورين:")
-
-    elif data == "broadcast":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "broadcast"
-        await query.message.reply_text("أرسل النص المراد إرساله للإذاعة لجميع المشتركين:")
-
-    elif data == "set_force_channel":
-        if not is_dev(user_id): return
-        context.user_data["action"] = "set_force_channel"
-        await query.message.reply_text("أرسل معرف القناة مع الـ @ (مثال: `@MyChannel`) أو اتركها فارغة للإلغاء:")
-
-    elif data == "restore_backup":
-        if not is_dev(user_id): return
-        context.user_data["awaiting_backup_file"] = True
-        await query.message.reply_text("أرسل الآن ملف النسخة الاحتياطية (`.json`).")
+            await query.message.reply_text("❌ حدث خطأ غير متوقع أثناء تنفيذ الأمر.")
+        except Exception:
+            pass
 
 # ==================== استقبال الرسائل والملفات ====================
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -606,7 +616,6 @@ async def handle_documents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(doc.file_id)
         await file.download_to_drive(file_path)
 
-        # فحص وتثبيت المكتبات تلقائياً وقت الرفع
         modules = extract_requirements(file_path)
         if modules:
             await status_msg.edit_text(f"📦 جاري تثبيت المكتبات المطلوبة (`{', '.join(modules)}`)...")
